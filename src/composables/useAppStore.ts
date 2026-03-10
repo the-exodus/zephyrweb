@@ -1,6 +1,6 @@
 import { ref, computed, triggerRef } from 'vue'
 import type { Project, Folder, TestCase, Step } from '../types'
-import { parse, serialize, readFile, uid } from '../services/xmlService'
+import { parse, serialize, readFile, uid, ensureKnownCustomFields } from '../services/xmlService'
 import * as undo from '../services/undoManager'
 import { buildSystemPrompt, sendMessage, applyResult } from '../services/aiService'
 import type { FolderPayload } from '../services/aiService'
@@ -191,6 +191,8 @@ function assignUids(p: Project) {
     for (const tc of f.testCases) {
       tc._uid = uid()
       if (UUID_RE.test(tc.id)) tc.id = String(nextId++)
+      if (!tc.customFields) tc.customFields = []
+      ensureKnownCustomFields(tc.customFields)
       for (const s of tc.steps) {
         s._uid = uid()
       }
@@ -527,6 +529,7 @@ function addTestCase() {
     updatedBy: null,
     updatedOn: null,
     owner: null,
+    customFields: ensureKnownCustomFields([]),
     issues: [],
     steps: [],
   }

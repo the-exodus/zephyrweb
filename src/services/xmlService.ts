@@ -1,4 +1,18 @@
-import type { Project, Folder, TestCase, Step, Issue } from '../types'
+import type { Project, Folder, TestCase, Step, Issue, CustomField } from '../types'
+
+const KNOWN_CUSTOM_FIELDS: Array<{ name: string; type: string }> = [
+  { name: 'Scenario', type: 'SINGLE_LINE_TEXT' },
+  { name: 'System', type: 'SINGLE_CHOICE_SELECT_LIST' },
+]
+
+export function ensureKnownCustomFields(fields: CustomField[]): CustomField[] {
+  for (const known of KNOWN_CUSTOM_FIELDS) {
+    if (!fields.some(f => f.name === known.name)) {
+      fields.push({ name: known.name, type: known.type, value: '' })
+    }
+  }
+  return fields
+}
 
 let nextUid = 0
 export function uid(): number { return ++nextUid }
@@ -68,6 +82,15 @@ export function parse(xmlText: string): Project {
   for (const tcElem of root.querySelector('testCases')?.querySelectorAll(':scope > testCase') ?? []) {
     const folderPath = getText(tcElem, 'folder')
 
+    const customFields: CustomField[] = []
+    for (const cf of tcElem.querySelector('customFields')?.querySelectorAll('customField') ?? []) {
+      customFields.push({
+        name: cf.getAttribute('name') ?? '',
+        type: cf.getAttribute('type') ?? '',
+        value: getText(cf, 'value'),
+      })
+    }
+
     const issues: Issue[] = []
     for (const ie of tcElem.querySelector('issues')?.querySelectorAll('issue') ?? []) {
       issues.push({ key: getText(ie, 'key'), summary: getText(ie, 'summary') })
@@ -99,6 +122,7 @@ export function parse(xmlText: string): Project {
       updatedBy: getTextOrNull(tcElem, 'updatedBy'),
       updatedOn: getTextOrNull(tcElem, 'updatedOn'),
       owner: getTextOrNull(tcElem, 'owner'),
+      customFields: ensureKnownCustomFields(customFields),
       issues,
       steps,
     }
@@ -184,7 +208,18 @@ export function serialize(project: Project): string {
       W('            <confluencePageLinks/>')
       W(`            <createdBy>${tc.createdBy}</createdBy>`)
       W(`            <createdOn>${tc.createdOn}</createdOn>`)
-      W('            <customFields/>')
+      const nonEmptyFields = tc.customFields.filter(cf => cf.value)
+      if (nonEmptyFields.length > 0) {
+        W('            <customFields>')
+        for (const cf of nonEmptyFields) {
+          W(`                <customField name="${escapeAttr(cf.name)}" type="${escapeAttr(cf.type)}">`)
+          W(`                    <value>${cdata(cf.value)}</value>`)
+          W('                </customField>')
+        }
+        W('            </customFields>')
+      } else {
+        W('            <customFields/>')
+      }
       W(`            <folder>${cdata(path)}</folder>`)
 
       if (tc.issues.length > 0) {

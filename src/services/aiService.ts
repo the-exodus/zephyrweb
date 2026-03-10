@@ -1,5 +1,5 @@
 import type { Folder, TestCase, Step } from '../types'
-import { uid } from './xmlService'
+import { uid, ensureKnownCustomFields } from './xmlService'
 
 // --- Payload types (what we send/receive from Claude) ---
 
@@ -9,6 +9,12 @@ export interface FolderPayload {
   testCases: TestCasePayload[]
 }
 
+interface CustomFieldPayload {
+  name: string
+  type: string
+  value: string
+}
+
 interface TestCasePayload {
   id: string
   key: string
@@ -16,6 +22,7 @@ interface TestCasePayload {
   priority: string
   status: string
   objective: string | null
+  customFields?: CustomFieldPayload[]
   steps: StepPayload[]
 }
 
@@ -43,6 +50,7 @@ export function serializeFolderTree(folder: Folder): FolderPayload {
       priority: tc.priority,
       status: tc.status,
       objective: tc.objective,
+      customFields: tc.customFields.length > 0 ? tc.customFields : undefined,
       steps: tc.steps.map(s => ({
         description: s.description,
         expectedResult: s.expectedResult,
@@ -79,6 +87,11 @@ Rules for "result" responses:
 - Valid priorities: "Critical", "High", "Normal", "Low"
 - Valid statuses: "Draft", "Approved", "Deprecated"
 - Steps have: description (string|null), expectedResult (string|null), testData (string|null)
+- Test cases may have "customFields" (array of {name, type, value}). Preserve existing custom fields exactly.
+- Known custom fields:
+  - Scenario: { "name": "Scenario", "type": "SINGLE_LINE_TEXT", "value": "..." }
+  - System: { "name": "System", "type": "SINGLE_CHOICE_SELECT_LIST", "value": "..." }
+  When asked to add or edit these, use the custom field format shown above.
 
 IMPORTANT: Return ONLY the JSON object. No markdown code fences, no extra text outside the JSON.
 
@@ -102,8 +115,8 @@ export async function sendMessage(
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 8192,
+      model: 'claude-sonnet-4-6',
+      max_tokens: 32768,
       system: systemPrompt,
       messages,
     }),
@@ -223,6 +236,7 @@ function mergeTestCase(payload: TestCasePayload, origTcMap: Map<string, TestCase
     updatedBy: orig?.updatedBy ?? null,
     updatedOn: orig?.updatedOn ?? null,
     owner: orig?.owner ?? null,
+    customFields: ensureKnownCustomFields(payload.customFields ?? orig?.customFields ?? []),
     issues: orig?.issues ?? [],
     steps: payload.steps.map(s => mergeStep(s)),
   }
