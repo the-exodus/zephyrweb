@@ -12,9 +12,7 @@
     "jsx": "preserve",
     "sourceMap": true,
     "resolveJsonModule": true,
-    "isolatedModules": true,
-    "paths": { "@/*": ["./src/*"] },
-    "baseUrl": "."
+    "isolatedModules": true
   },
   "include": ["src/**/*.ts", "src/**/*.vue", "env.d.ts"]
 }
