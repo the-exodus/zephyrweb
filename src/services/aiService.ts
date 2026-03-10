@@ -57,6 +57,8 @@ export type Operation =
   | { op: 'delete_test_case'; _uid: number }
   | { op: 'add_step'; _uid: number; step: { description: string | null; expectedResult: string | null; testData: string | null } }
   | { op: 'delete_step'; _uid: number; stepIndex: number }
+  | { op: 'create_folder'; parent: string; name: string }
+  | { op: 'delete_folder'; folder: string }
 
 export type AiResponse =
   | { type: 'answer'; text: string }
@@ -66,14 +68,20 @@ export type AiResponse =
 
 const TOOL_DEFINITION = {
   name: 'apply_operations',
-  description: 'Apply edit operations to the test case data. Use this when the user asks to make changes.',
+  description: 'Apply edit operations to the test case data. Use this when the user asks to make changes. Each operation must have an "op" field specifying the type.',
   input_schema: {
     type: 'object' as const,
     properties: {
       operations: {
         type: 'array' as const,
-        description: 'Array of edit operations to apply',
-        items: { type: 'object' as const },
+        description: 'Array of edit operations. Each must have "op" (e.g. "update_test_case", "batch_update", "add_test_case", "delete_test_case", "update_step", "add_step", "delete_step", "create_folder", "delete_folder") and operation-specific fields as described in the system prompt.',
+        items: {
+          type: 'object' as const,
+          properties: {
+            op: { type: 'string' as const, description: 'Operation type' },
+          },
+          required: ['op'],
+        },
       },
     },
     required: ['operations'],
@@ -87,6 +95,8 @@ export function buildSystemPrompt(folder: Folder): string {
   return `You are an assistant for a Zephyr Scale test case editor. The user is viewing a folder of test cases and may ask you to analyze, explain, or edit them.
 
 When the user asks to make changes, use the apply_operations tool. You may include reasoning or explanation in your text before calling the tool.
+
+If the user's request is ambiguous or you need more information, ask a clarifying question instead of guessing. Only call the tool when you are confident about what changes to make.
 
 Available operation types:
 
@@ -113,6 +123,12 @@ add_step \u2014 Append a step to a test case
 
 delete_step \u2014 Remove a step by index
   { "op": "delete_step", "_uid": <test case _uid>, "stepIndex": <0-based> }
+
+create_folder \u2014 Create a new subfolder
+  { "op": "create_folder", "parent": "<parent folder path>", "name": "New Folder" }
+
+delete_folder \u2014 Remove a folder and all its contents (test cases and subfolders)
+  { "op": "delete_folder", "folder": "<folder path>" }
 
 Rules:
 - Reference existing test cases by their "_uid" field (a unique number). Do NOT use "id".
@@ -181,7 +197,17 @@ function parseResponse(content: ContentBlock[]): AiResponse {
     if (block.type === 'text' && block.text) {
       textParts.push(block.text)
     } else if (block.type === 'tool_use' && block.name === 'apply_operations' && block.input) {
-      operations = validateOperations(block.input.operations as unknown[])
+      const raw = block.input.operations
+      if (Array.isArray(raw) && raw.length > 0) {
+        try {
+          operations = validateOperations(raw)
+        } catch (err) {
+          const detail = JSON.stringify(block.input, null, 2).slice(0, 500)
+          const msg = err instanceof Error ? err.message : String(err)
+          throw new Error(`Invalid tool response: ${msg}\n\nRaw input:\n${detail}`)
+        }
+      }
+      // Empty or missing operations array — ignore the tool call, fall through to text
     }
   }
 
@@ -228,6 +254,13 @@ function validateOperations(data: unknown[]): Operation[] {
       case 'delete_step':
         if (typeof op._uid !== 'number') throw new Error(`operations[${i}]._uid: expected number`)
         if (typeof op.stepIndex !== 'number') throw new Error(`operations[${i}].stepIndex: expected number`)
+        break
+      case 'create_folder':
+        if (typeof op.parent !== 'string') throw new Error(`operations[${i}].parent: expected string`)
+        if (typeof op.name !== 'string') throw new Error(`operations[${i}].name: expected string`)
+        break
+      case 'delete_folder':
+        if (typeof op.folder !== 'string') throw new Error(`operations[${i}].folder: expected string`)
         break
       default:
         throw new Error(`operations[${i}]: unknown op "${op.op}"`)
@@ -317,6 +350,14 @@ export function generateChangelog(folder: Folder, operations: Operation[]): stri
       case 'delete_step': {
         const tc = tcByUid.get(op._uid)
         lines.push(`\u2022 Removed step ${op.stepIndex + 1} from "${tc?.name ?? `_uid ${op._uid}`}"`)
+        break
+      }
+      case 'create_folder': {
+        lines.push(`\u2022 Created folder "${op.name}" in "${op.parent}"`)
+        break
+      }
+      case 'delete_folder': {
+        lines.push(`\u2022 Deleted folder "${op.folder}" and all its contents`)
         break
       }
     }
@@ -435,6 +476,33 @@ export function applyOperations(folder: Folder, operations: Operation[]): void {
         const tc = tcByUid.get(op._uid)
         if (tc && op.stepIndex >= 0 && op.stepIndex < tc.steps.length) {
           tc.steps.splice(op.stepIndex, 1)
+        }
+        break
+      }
+      case 'create_folder': {
+        const parentFolder = folderByPath.get(op.parent)
+        if (!parentFolder) break
+        const newFolder: Folder = {
+          _uid: uid(),
+          index: parentFolder.children.length,
+          name: op.name,
+          children: [],
+          testCases: [],
+        }
+        parentFolder.children.push(newFolder)
+        folderByPath.set(`${op.parent}/${op.name}`, newFolder)
+        break
+      }
+      case 'delete_folder': {
+        const target = folderByPath.get(op.folder)
+        if (!target) break
+        // Find parent by checking all folders' children
+        for (const f of folderByPath.values()) {
+          const idx = f.children.indexOf(target)
+          if (idx >= 0) {
+            f.children.splice(idx, 1)
+            break
+          }
         }
         break
       }
