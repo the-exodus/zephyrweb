@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import type { TestCase, Folder } from '../types'
+import type { TestCase, Folder, CustomField } from '../types'
 import { useAppStore } from '../composables/useAppStore'
 import EditableText from './EditableText.vue'
 import draggable from 'vuedraggable'
@@ -84,6 +84,14 @@ function confirmMove() {
 
 function flatFolders(): Folder[] {
   return store.allFolders()
+}
+
+const detailTc = computed(() =>
+  store.selectedTestCases.value.size === 1 ? store.selectedTestCase.value : null
+)
+
+function onCustomFieldCommit(cf: CustomField, oldVal: string, newVal: string | null) {
+  store.recordPropertyEdit(cf as unknown as Record<string, unknown>, 'value', oldVal, newVal ?? '')
 }
 
 function folderPath(folder: Folder): string {
@@ -209,6 +217,37 @@ function folderPath(folder: Folder): string {
           </template>
         </draggable>
       </table>
+    </div>
+
+    <!-- Detail pane -->
+    <div v-if="detailTc" class="shrink-0 border-t border-gray-200 bg-gray-50 px-3 py-2 overflow-y-auto max-h-48">
+      <div class="flex gap-8">
+        <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+          <span class="text-gray-500">Key</span>
+          <span class="text-gray-700">{{ detailTc.key || '\u2014' }}</span>
+
+          <span class="text-gray-500">Objective</span>
+          <EditableText :modelValue="detailTc.objective" @update:modelValue="v => detailTc!.objective = v" @commit="(o, n) => onCommit(detailTc!, 'objective', o, n)" placeholder="(none)" />
+
+          <span class="text-gray-500">Created by</span>
+          <span class="text-gray-700">{{ detailTc.createdBy || '\u2014' }}</span>
+
+          <span class="text-gray-500">Created on</span>
+          <span class="text-gray-700">{{ detailTc.createdOn || '\u2014' }}</span>
+
+          <span class="text-gray-500">Updated by</span>
+          <span class="text-gray-700">{{ detailTc.updatedBy || '\u2014' }}</span>
+
+          <span class="text-gray-500">Updated on</span>
+          <span class="text-gray-700">{{ detailTc.updatedOn || '\u2014' }}</span>
+        </div>
+        <div v-if="detailTc.customFields.length > 0" class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm self-start">
+          <template v-for="cf in detailTc.customFields" :key="cf.name">
+            <span class="text-gray-500">{{ cf.name }}</span>
+            <EditableText :modelValue="cf.value || null" @update:modelValue="v => cf.value = v ?? ''" @commit="(o, n) => onCustomFieldCommit(cf, o ?? '', n)" placeholder="(none)" />
+          </template>
+        </div>
+      </div>
     </div>
 
     <!-- Move to folder dialog -->

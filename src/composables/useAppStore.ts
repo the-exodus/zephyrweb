@@ -1,6 +1,6 @@
 import { ref, computed, triggerRef } from 'vue'
 import type { Project, Folder, TestCase, Step } from '../types'
-import { parse, serialize, readFile, uid } from '../services/xmlService'
+import { parse, serialize, readFile, uid, ensureKnownCustomFields } from '../services/xmlService'
 import * as undo from '../services/undoManager'
 import { buildSystemPrompt, sendMessage, applyResult } from '../services/aiService'
 import type { FolderPayload } from '../services/aiService'
@@ -527,6 +527,7 @@ function addTestCase() {
     updatedBy: null,
     updatedOn: null,
     owner: null,
+    customFields: ensureKnownCustomFields([]),
     issues: [],
     steps: [],
   }

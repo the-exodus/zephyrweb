@@ -5,6 +5,12 @@ export interface Step {
   testData: string | null
 }
 
+export interface CustomField {
+  name: string
+  type: string
+  value: string
+}
+
 export interface Issue {
   key: string
   summary: string
@@ -23,6 +29,7 @@ export interface TestCase {
   updatedBy: string | null
   updatedOn: string | null
   owner: string | null
+  customFields: CustomField[]
   issues: Issue[]
   steps: Step[]
 }
