@@ -5,10 +5,14 @@ const KNOWN_CUSTOM_FIELDS: Array<{ name: string; type: string }> = [
   { name: 'System', type: 'SINGLE_CHOICE_SELECT_LIST' },
 ]
 
-export function ensureKnownCustomFields(fields: CustomField[]): CustomField[] {
+export function ensureKnownCustomFields(fields: CustomField[], defaultScenario?: string): CustomField[] {
   for (const known of KNOWN_CUSTOM_FIELDS) {
-    if (!fields.some(f => f.name === known.name)) {
-      fields.push({ name: known.name, type: known.type, value: '' })
+    const existing = fields.find(f => f.name === known.name)
+    if (!existing) {
+      const value = known.name === 'Scenario' && defaultScenario ? defaultScenario : ''
+      fields.push({ name: known.name, type: known.type, value })
+    } else if (known.name === 'Scenario' && !existing.value && defaultScenario) {
+      existing.value = defaultScenario
     }
   }
   return fields
@@ -122,7 +126,7 @@ export function parse(xmlText: string): Project {
       updatedBy: getTextOrNull(tcElem, 'updatedBy'),
       updatedOn: getTextOrNull(tcElem, 'updatedOn'),
       owner: getTextOrNull(tcElem, 'owner'),
-      customFields: ensureKnownCustomFields(customFields),
+      customFields: ensureKnownCustomFields(customFields, folderPath.includes('/') ? folderPath.substring(folderPath.lastIndexOf('/') + 1) : folderPath),
       issues,
       steps,
     }
