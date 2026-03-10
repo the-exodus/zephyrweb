@@ -182,11 +182,15 @@ function restoreFromStorage(): boolean {
   }
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function assignUids(p: Project) {
+  let nextId = 1
   for (const f of allFolders(p.folders)) {
     f._uid = uid()
     for (const tc of f.testCases) {
       tc._uid = uid()
+      if (UUID_RE.test(tc.id)) tc.id = String(nextId++)
       for (const s of tc.steps) {
         s._uid = uid()
       }
@@ -505,7 +509,7 @@ function addTestCase() {
   const folder = selectedFolder.value
   const tc: TestCase = {
     _uid: uid(),
-    id: crypto.randomUUID(),
+    id: '',
     key: '',
     name: 'New Test Case',
     priority: 'High',
