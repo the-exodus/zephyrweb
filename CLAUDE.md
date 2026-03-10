@@ -73,13 +73,13 @@ Step text fields use `<br />` in XML ↔ `\n` in the UI. All text fields wrapped
 
 ### AI integration
 
-`src/services/aiService.ts` provides Claude API integration. The AI panel (`AiPanel.vue`) scopes conversations to the selected folder and its subfolders. The folder tree is serialized to JSON (stripping `_uid`, `index`, and metadata fields) and included in the system prompt, which is rebuilt on every message so Claude sees current data.
+`src/services/aiService.ts` provides Claude API integration. The AI panel (`AiPanel.vue`) scopes conversations to the selected folder and its subfolders. The folder tree is serialized to JSON (stripping `_uid`, `index`, metadata fields, and null values) and included in the system prompt, which is rebuilt on every message so Claude sees current data.
 
-Claude always responds with JSON in one of three formats: `{"type": "answer", "text": "..."}`, `{"type": "question", "text": "..."}`, or `{"type": "result", "summary": "...", "data": <folder tree>}`. Result responses show Apply/Reject buttons — applying replaces the folder's data via `applyResult()` which re-assigns `_uid`s and restores metadata from originals by matching on `id`. The whole apply is a single undo action.
+Claude always responds with JSON in one of three formats: `{"type": "answer", "text": "..."}`, `{"type": "question", "text": "..."}`, or `{"type": "result", "operations": [...]}`. The operation-based approach means output size is proportional to changes, not total data — it can handle folders with 1000+ test cases.
 
-API calls go directly from the browser using the `anthropic-dangerous-direct-browser-access` header (no proxy needed). The user's API key is stored in localStorage under `zephyrEdit.settings`. Model: `claude-sonnet-4-6`, no extended thinking.
+Available operations: `update_test_case`, `batch_update` (same fields on multiple test cases), `update_step`, `add_test_case`, `delete_test_case`, `add_step`, `delete_step`. Result responses generate a human-readable changelog from the operations (showing old→new values) displayed with Apply/Reject buttons. `applyOperations()` mutates the folder in place. Undo uses deep snapshots (`snapshotFolder`/`restoreFolder`) taken before and after applying.
 
-**Known limitation**: The full-replacement approach means large folders (200+ test cases) can exceed output token limits. This needs a different strategy (e.g., granular edit operations) for large datasets.
+API calls go directly from the browser using the `anthropic-dangerous-direct-browser-access` header (no proxy needed). The user's API key is stored in localStorage under `zephyrEdit.settings`. Model: `claude-sonnet-4-6`, max_tokens: 16384, no extended thinking.
 
 ### Settings
 

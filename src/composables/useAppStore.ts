@@ -2,8 +2,8 @@ import { ref, computed, triggerRef } from 'vue'
 import type { Project, Folder, TestCase, Step } from '../types'
 import { parse, serialize, readFile, uid, ensureKnownCustomFields } from '../services/xmlService'
 import * as undo from '../services/undoManager'
-import { buildSystemPrompt, sendMessage, applyResult } from '../services/aiService'
-import type { FolderPayload } from '../services/aiService'
+import { buildSystemPrompt, sendMessage, generateChangelog, applyOperations, snapshotFolder, restoreFolder } from '../services/aiService'
+import type { Operation } from '../services/aiService'
 
 // --- State ---
 
@@ -21,8 +21,7 @@ export interface AiMessage {
   role: 'user' | 'assistant'
   content: string
   proposal?: {
-    summary: string
-    data: FolderPayload
+    operations: Operation[]
     status: 'pending' | 'accepted' | 'rejected'
     folder: Folder
   }
@@ -714,13 +713,17 @@ async function sendAiMessage(text: string) {
 
     const response = await sendMessage(messages, systemPrompt, apiKey.value)
 
-    if (response.type === 'answer' || response.type === 'question') {
+    if (response.type === 'answer') {
       aiMessages.value.push({ role: 'assistant', content: response.text })
     } else {
+      const changelog = generateChangelog(folder, response.operations)
+      const content = response.reasoning
+        ? response.reasoning + '\n\n' + changelog
+        : changelog
       aiMessages.value.push({
         role: 'assistant',
-        content: response.summary,
-        proposal: { summary: response.summary, data: response.data, status: 'pending', folder },
+        content,
+        proposal: { operations: response.operations, status: 'pending', folder },
       })
     }
   } catch (err: unknown) {
@@ -733,33 +736,17 @@ async function sendAiMessage(text: string) {
 
 function acceptProposal(msg: AiMessage) {
   if (!msg.proposal || msg.proposal.status !== 'pending') return
-  const { data, folder } = msg.proposal
+  const { operations, folder } = msg.proposal
 
-  // Snapshot for undo
-  const prevName = folder.name
-  const prevChildren = [...folder.children]
-  const prevTestCases = [...folder.testCases]
-
-  // Apply
-  const merged = applyResult(folder, data)
-  folder.name = merged.name
-  folder.children = merged.children
-  folder.testCases = merged.testCases
+  const before = snapshotFolder(folder)
+  applyOperations(folder, operations)
+  const after = snapshotFolder(folder)
 
   msg.proposal.status = 'accepted'
 
   undo.record({
-    undo: () => {
-      folder.name = prevName
-      folder.children = prevChildren
-      folder.testCases = prevTestCases
-    },
-    redo: () => {
-      const re = applyResult(folder, data)
-      folder.name = re.name
-      folder.children = re.children
-      folder.testCases = re.testCases
-    },
+    undo: () => restoreFolder(folder, before),
+    redo: () => restoreFolder(folder, after),
   })
   markChanged()
   triggerRef(project)
