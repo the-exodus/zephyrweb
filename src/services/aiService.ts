@@ -76,7 +76,7 @@ Rules for "result" responses:
 - Only modify fields relevant to the user's request. Preserve everything else exactly.
 - Preserve "id" and "key" fields on existing test cases exactly as-is.
 - For NEW test cases, set "id" to "0" and "key" to "" (empty string).
-- Valid priorities: "High", "Normal", "Low"
+- Valid priorities: "Critical", "High", "Normal", "Low"
 - Valid statuses: "Draft", "Approved", "Deprecated"
 - Steps have: description (string|null), expectedResult (string|null), testData (string|null)
 
@@ -143,9 +143,35 @@ function parseResponse(text: string): AiResponse {
     return { type: 'question', text: obj.text }
   }
   if (obj.type === 'result' && typeof obj.summary === 'string' && obj.data) {
+    validateFolderPayload(obj.data)
     return { type: 'result', summary: obj.summary, data: obj.data as FolderPayload }
   }
   throw new Error(`Unexpected response format: ${JSON.stringify(obj).slice(0, 200)}`)
+}
+
+function validateFolderPayload(data: unknown, path = 'data'): asserts data is FolderPayload {
+  if (!data || typeof data !== 'object') throw new Error(`${path}: expected object`)
+  const obj = data as Record<string, unknown>
+  if (typeof obj.name !== 'string') throw new Error(`${path}.name: expected string`)
+  if (!Array.isArray(obj.children)) throw new Error(`${path}.children: expected array`)
+  if (!Array.isArray(obj.testCases)) throw new Error(`${path}.testCases: expected array`)
+  for (let i = 0; i < obj.children.length; i++) {
+    validateFolderPayload(obj.children[i], `${path}.children[${i}]`)
+  }
+  for (let i = 0; i < obj.testCases.length; i++) {
+    validateTestCasePayload(obj.testCases[i], `${path}.testCases[${i}]`)
+  }
+}
+
+function validateTestCasePayload(data: unknown, path: string) {
+  if (!data || typeof data !== 'object') throw new Error(`${path}: expected object`)
+  const obj = data as Record<string, unknown>
+  if (typeof obj.name !== 'string') throw new Error(`${path}.name: expected string`)
+  if (!Array.isArray(obj.steps)) throw new Error(`${path}.steps: expected array`)
+  for (let i = 0; i < obj.steps.length; i++) {
+    const step = obj.steps[i]
+    if (!step || typeof step !== 'object') throw new Error(`${path}.steps[${i}]: expected object`)
+  }
 }
 
 // --- Merge AI result back into a Folder ---
