@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<project>
+    <projectId>11501</projectId>
+    <projectKey>DEV</projectKey>
+    <modelVersion>1.0</modelVersion>
+    <jiraVersion>9.12.23</jiraVersion>
+    <exportDate>2026-03-01 20:41:25 UTC</exportDate>
+    <folders>
+        <folder fullPath="Login" index="0"/>
+        <folder fullPath="Login/Basic" index="0"/>
+        <folder fullPath="Checkout" index="1"/>
+        <folder fullPath="Checkout/Payments" index="0"/>
+        <folder fullPath="Checkout/Shipping" index="1"/>
+    </folders>
+    <testCases>
+        <testCase id="100" key="DEV-T100">
+            <attachments/>
+            <confluencePageLinks/>
+            <createdBy>Test User</createdBy>
+            <createdOn>2026-01-15 10:00:00 UTC</createdOn>
+            <customFields/>
+            <folder><![CDATA[Login/Basic]]></folder>
+            <issues/>
+            <labels/>
+            <name><![CDATA[Verify basic login]]></name>
+            <priority><![CDATA[High]]></priority>
+            <status><![CDATA[Approved]]></status>
+            <parameters/>
+            <testScript type="steps">
+                <steps>
+                    <step index="0">
+                        <customFields/>
+                        <description><![CDATA[Navigate to login page]]></description>
+                        <expectedResult><![CDATA[Login page is displayed]]></expectedResult>
+                    </step>
+                    <step index="1">
+                        <customFields/>
+                        <description><![CDATA[Enter valid credentials<br />Click submit]]></description>
+                        <expectedResult><![CDATA[User is redirected to dashboard]]></expectedResult>
+                        <testData><![CDATA[Username: testuser<br />Password: testpass]]></testData>
+                    </step>
+                </steps>
+            </testScript>
+        </testCase>
+        <testCase id="101" key="DEV-T101">
+            <attachments/>
+            <confluencePageLinks/>
+            <createdBy>Test User</createdBy>
+            <createdOn>2026-01-16 11:00:00 UTC</createdOn>
+            <customFields/>
+            <folder><![CDATA[Login/Basic]]></folder>
+            <issues>
+                <issue>
+                    <key>DEV-500</key>
+                    <summary><![CDATA[Login fails with special characters]]></summary>
+                </issue>
+            </issues>
+            <labels/>
+            <name><![CDATA[Login with invalid credentials]]></name>
+            <priority><![CDATA[Medium]]></priority>
+            <status><![CDATA[Draft]]></status>
+            <parameters/>
+            <testScript type="steps">
+                <steps>
+                    <step index="0">
+                        <customFields/>
+                        <description><![CDATA[Enter invalid username/password]]></description>
+                        <expectedResult><![CDATA[Error message displayed]]></expectedResult>
+                    </step>
+                </steps>
+            </testScript>
+            <updatedBy>Another User</updatedBy>
+            <updatedOn>2026-02-01 14:30:00 UTC</updatedOn>
+        </testCase>
+        <testCase id="200" key="DEV-T200">
+            <attachments/>
+            <confluencePageLinks/>
+            <createdBy>Test User</createdBy>
+            <createdOn>2026-02-10 09:00:00 UTC</createdOn>
+            <customFields/>
+            <folder><![CDATA[Checkout/Payments]]></folder>
+            <issues/>
+            <labels/>
+            <name><![CDATA[Process credit card payment]]></name>
+            <owner>Payment Team</owner>
+            <priority><![CDATA[High]]></priority>
+            <status><![CDATA[Approved]]></status>
+            <parameters/>
+            <testScript type="steps">
+                <steps>
+                    <step index="0">
+                        <customFields/>
+                        <description><![CDATA[Add item to cart and proceed to checkout]]></description>
+                        <expectedResult><![CDATA[Checkout page displayed with payment options]]></expectedResult>
+                    </step>
+                    <step index="1">
+                        <customFields/>
+                        <description><![CDATA[Select credit card and enter details]]></description>
+                        <expectedResult><![CDATA[Payment processed successfully]]></expectedResult>
+                        <testData><![CDATA[Card: 4111111111111111<br />Exp: 12/27<br />CVV: 123]]></testData>
+                    </step>
+                    <step index="2">
+                        <customFields/>
+                        <description><![CDATA[Verify order confirmation]]></description>
+                        <expectedResult><![CDATA[Order confirmation page with order number]]></expectedResult>
+                    </step>
+                </steps>
+            </testScript>
+        </testCase>
+    </testCases>
+</project>

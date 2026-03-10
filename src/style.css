@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme {
+  --color-accent: #3b82f6;
+}
+
+/* Splitpanes styling */
+.splitpanes--vertical > .splitpanes__splitter {
+  min-width: 5px;
+  background: var(--color-gray-200);
+  cursor: col-resize;
+}
+
+.splitpanes--vertical > .splitpanes__splitter:hover {
+  background: var(--color-accent);
+}
+
+/* Folder tree indentation */
+.folder-children {
+  padding-left: 1rem;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-gray-300);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gray-400);
+}
+
+/* Sortable ghost styling */
+.sortable-ghost {
+  opacity: 0.4;
+  background: var(--color-blue-100) !important;
+}
+
+.sortable-drag {
+  opacity: 0.8;
+}
+
+/* Transition for drag handle */
+.drag-handle {
+  opacity: 0.3;
+  transition: opacity 150ms;
+}
+
+.drag-handle:hover,
+.group:hover .drag-handle {
+  opacity: 0.7;
+}
