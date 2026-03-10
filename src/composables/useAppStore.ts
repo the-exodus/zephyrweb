@@ -2,6 +2,8 @@ import { ref, computed, triggerRef } from 'vue'
 import type { Project, Folder, TestCase, Step } from '../types'
 import { parse, serialize, readFile, uid } from '../services/xmlService'
 import * as undo from '../services/undoManager'
+import { buildSystemPrompt, sendMessage, applyResult } from '../services/aiService'
+import type { FolderPayload } from '../services/aiService'
 
 // --- State ---
 
@@ -18,6 +20,12 @@ const hasUnsavedChanges = ref(false)
 export interface AiMessage {
   role: 'user' | 'assistant'
   content: string
+  proposal?: {
+    summary: string
+    data: FolderPayload
+    status: 'pending' | 'accepted' | 'rejected'
+    folder: Folder
+  }
 }
 const showAiPanel = ref(false)
 const aiMessages = ref<AiMessage[]>([])
@@ -676,6 +684,82 @@ function onStepDragEnd(oldIndex: number, newIndex: number) {
   markChanged()
 }
 
+// --- AI operations ---
+
+async function sendAiMessage(text: string) {
+  if (!selectedFolder.value || !apiKey.value) return
+
+  const folder = selectedFolder.value
+  aiMessages.value.push({ role: 'user', content: text })
+  aiLoading.value = true
+
+  try {
+    const systemPrompt = buildSystemPrompt(folder)
+    // Build messages for API — strip proposal metadata
+    const messages = aiMessages.value.map(m => ({ role: m.role, content: m.content }))
+
+    const response = await sendMessage(messages, systemPrompt, apiKey.value)
+
+    if (response.type === 'answer' || response.type === 'question') {
+      aiMessages.value.push({ role: 'assistant', content: response.text })
+    } else {
+      aiMessages.value.push({
+        role: 'assistant',
+        content: response.summary,
+        proposal: { summary: response.summary, data: response.data, status: 'pending', folder },
+      })
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    aiMessages.value.push({ role: 'assistant', content: `Error: ${message}` })
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+function acceptProposal(msg: AiMessage) {
+  if (!msg.proposal || msg.proposal.status !== 'pending') return
+  const { data, folder } = msg.proposal
+
+  // Snapshot for undo
+  const prevName = folder.name
+  const prevChildren = [...folder.children]
+  const prevTestCases = [...folder.testCases]
+
+  // Apply
+  const merged = applyResult(folder, data)
+  folder.name = merged.name
+  folder.children = merged.children
+  folder.testCases = merged.testCases
+
+  msg.proposal.status = 'accepted'
+
+  undo.record({
+    undo: () => {
+      folder.name = prevName
+      folder.children = prevChildren
+      folder.testCases = prevTestCases
+    },
+    redo: () => {
+      const re = applyResult(folder, data)
+      folder.name = re.name
+      folder.children = re.children
+      folder.testCases = re.testCases
+    },
+  })
+  markChanged()
+  triggerRef(project)
+}
+
+function rejectProposal(msg: AiMessage) {
+  if (!msg.proposal || msg.proposal.status !== 'pending') return
+  msg.proposal.status = 'rejected'
+}
+
+function clearAiChat() {
+  aiMessages.value = []
+}
+
 // --- Init: restore from localStorage ---
 
 restoreFromStorage()
@@ -720,5 +804,7 @@ export function useAppStore() {
     confirm, resolveDialog,
     // Settings
     saveSettings,
+    // AI
+    sendAiMessage, acceptProposal, rejectProposal, clearAiChat,
   }
 }
