@@ -163,7 +163,7 @@ export async function sendMessage(
     },
     body: JSON.stringify({
       model: 'claude-sonnet-4-6',
-      max_tokens: 16384,
+      max_tokens: 32768,
       system: systemPrompt,
       tools: [TOOL_DEFINITION],
       messages,
@@ -177,7 +177,7 @@ export async function sendMessage(
   }
 
   const body = await res.json()
-  return parseResponse(body.content ?? [])
+  return parseResponse(body.content ?? [], body.stop_reason)
 }
 
 // --- Parse response content blocks ---
@@ -189,7 +189,7 @@ interface ContentBlock {
   input?: Record<string, unknown>
 }
 
-function parseResponse(content: ContentBlock[]): AiResponse {
+function parseResponse(content: ContentBlock[], stopReason?: string): AiResponse {
   const textParts: string[] = []
   let operations: Operation[] | null = null
 
@@ -212,6 +212,13 @@ function parseResponse(content: ContentBlock[]): AiResponse {
   }
 
   const reasoning = textParts.join('\n').trim()
+
+  if (stopReason === 'max_tokens') {
+    const truncated = reasoning
+      ? reasoning + '\n\n(Response was cut off — try a simpler request or fewer test cases at a time)'
+      : '(Response was cut off — try a simpler request or fewer test cases at a time)'
+    return { type: 'answer', text: truncated }
+  }
 
   if (operations) {
     return { type: 'result', operations, reasoning: reasoning || undefined }
