@@ -61,7 +61,7 @@ Uses File System Access API (`showOpenFilePicker`/`showSaveFilePicker`) with fal
 
 ### Custom fields
 
-Test cases have a `customFields: CustomField[]` array where each entry has `{name, type, value}`. Two known fields are always present in the model: `Scenario` (`SINGLE_LINE_TEXT`) and `System` (`SINGLE_CHOICE_SELECT_LIST`). `ensureKnownCustomFields()` in `xmlService.ts` backfills these on parse, localStorage restore, new test case creation, and AI merge. Empty custom fields (value `""`) are omitted when serializing to XML. The detail pane in `TestCasePanel.vue` always shows known fields with a `(none)` placeholder when empty, so users can add values even if the imported file didn't have them. Any other custom fields found in the XML are preserved generically.
+Test cases have a `customFields: CustomField[]` array where each entry has `{name, type, value}`. Two known fields are always present in the model: `Scenario` (`SINGLE_LINE_TEXT`) and `System` (`SINGLE_CHOICE_SELECT_LIST`). `ensureKnownCustomFields()` in `xmlService.ts` backfills these on parse, localStorage restore, new test case creation, and AI merge. When backfilling Scenario, if the field is missing or empty and a folder name is available, it defaults to the containing folder's name. Empty custom fields (value `""`) are omitted when serializing to XML. The detail pane in `TestCasePanel.vue` always shows known fields with a `(none)` placeholder when empty, so users can add values even if the imported file didn't have them. Any other custom fields found in the XML are preserved generically.
 
 ### Test case IDs
 
