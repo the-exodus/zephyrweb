@@ -39,8 +39,24 @@ function sortIndicator(key: string) {
   return sortAsc.value ? ' \u25B4' : ' \u25BE'
 }
 
-function selectRow(tc: TestCase) {
-  store.selectTestCase(tc)
+function selectRow(tc: TestCase, event: MouseEvent) {
+  if (event.ctrlKey || event.metaKey) {
+    store.toggleTestCaseSelection(tc)
+  } else if (event.shiftKey) {
+    event.preventDefault()
+    window.getSelection()?.removeAllRanges()
+    store.selectTestCaseRange(visibleList(), tc)
+  } else {
+    store.selectTestCase(tc)
+  }
+}
+
+function visibleList(): TestCase[] {
+  return sortKey.value ? sortedTestCases.value : store.testCases.value
+}
+
+function isSelected(tc: TestCase): boolean {
+  return store.selectedTestCases.value.has(tc)
 }
 
 function onCommit(tc: TestCase, prop: string, oldVal: string | null, newVal: string | null) {
@@ -54,14 +70,14 @@ function onDragEnd(event: { oldIndex?: number; newIndex?: number }) {
 }
 
 function openMoveDialog() {
-  if (!store.selectedTestCase.value) return
+  if (store.selectedTestCases.value.size === 0) return
   moveTarget.value = null
   showMoveDialog.value = true
 }
 
 function confirmMove() {
-  if (store.selectedTestCase.value && moveTarget.value) {
-    store.moveTestCaseToFolder(store.selectedTestCase.value, moveTarget.value)
+  if (store.selectedTestCases.value.size > 0 && moveTarget.value) {
+    store.moveTestCasesToFolder([...store.selectedTestCases.value], moveTarget.value)
   }
   showMoveDialog.value = false
 }
@@ -91,11 +107,11 @@ function folderPath(folder: Folder): string {
       <span class="font-semibold text-sm">Test Cases</span>
       <div class="flex gap-1">
         <button
-          v-if="store.selectedTestCase.value"
+          v-if="store.selectedTestCases.value.size > 0"
           @click="openMoveDialog"
           class="px-2 py-0.5 text-xs rounded hover:bg-gray-200"
           title="Move to another folder"
-        >Move</button>
+        >Move{{ store.selectedTestCases.value.size > 1 ? ` (${store.selectedTestCases.value.size})` : '' }}</button>
         <button
           @click="store.addTestCase()"
           :disabled="!store.selectedFolder.value"
@@ -104,9 +120,9 @@ function folderPath(folder: Folder): string {
         >+</button>
         <button
           @click="store.deleteTestCase()"
-          :disabled="!store.selectedTestCase.value"
+          :disabled="store.selectedTestCases.value.size === 0"
           class="px-2 py-0.5 text-sm font-bold rounded hover:bg-gray-200 disabled:opacity-40"
-          title="Delete test case"
+          title="Delete test case(s)"
         >-</button>
       </div>
     </div>
@@ -140,9 +156,9 @@ function folderPath(folder: Folder): string {
           <tr
             v-for="tc in sortedTestCases"
             :key="tc.id"
-            @click="selectRow(tc)"
+            @click="selectRow(tc, $event)"
             class="border-b border-gray-100 cursor-pointer"
-            :class="store.selectedTestCase.value === tc ? 'bg-blue-50' : 'hover:bg-gray-50'"
+            :class="isSelected(tc) ? 'bg-blue-50' : 'hover:bg-gray-50'"
           >
             <td class="px-2 py-1 text-gray-500">{{ tc.key || '\u2014' }}</td>
             <td class="px-2 py-1">
@@ -172,9 +188,9 @@ function folderPath(folder: Folder): string {
         >
           <template #item="{ element: tc }: { element: TestCase }">
             <tr
-              @click="selectRow(tc)"
+              @click="selectRow(tc, $event)"
               class="border-b border-gray-100 cursor-pointer"
-              :class="store.selectedTestCase.value === tc ? 'bg-blue-50' : 'hover:bg-gray-50'"
+              :class="isSelected(tc) ? 'bg-blue-50' : 'hover:bg-gray-50'"
             >
               <td class="px-2 py-1 text-gray-500 drag-cell cursor-grab">{{ tc.key || '\u2014' }}</td>
               <td class="px-2 py-1">

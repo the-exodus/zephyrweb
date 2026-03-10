@@ -10,6 +10,7 @@ const fileName = ref<string | null>(null)
 const fileHandle = ref<FileSystemFileHandle | null>(null)
 const selectedFolder = ref<Folder | null>(null)
 const selectedTestCase = ref<TestCase | null>(null)
+const selectedTestCases = ref(new Set<TestCase>())
 const selectedStep = ref<Step | null>(null)
 const hasUnsavedChanges = ref(false)
 
@@ -39,6 +40,7 @@ const title = computed(() => {
 
 const statusContext = computed(() => {
   if (!project.value) return ''
+  if (selectedTestCases.value.size > 1) return `${selectedTestCases.value.size} test cases selected`
   if (selectedTestCase.value) return `${selectedTestCase.value.steps.length} step(s)`
   if (selectedFolder.value) return `${selectedFolder.value.testCases.length} test case(s)`
   const folderCount = countAllFolders(project.value.folders)
@@ -319,6 +321,7 @@ function recordPropertyEdit(target: Record<string, unknown>, prop: string, oldVa
 function selectFolder(folder: Folder | null) {
   selectedFolder.value = folder
   selectedTestCase.value = null
+  selectedTestCases.value = new Set()
   selectedStep.value = null
 }
 
@@ -415,7 +418,37 @@ function onFolderDragChange(list: Folder[], event: { moved?: { element: Folder; 
 // --- Test case operations ---
 
 function selectTestCase(tc: TestCase | null) {
+  if (tc) {
+    selectedTestCases.value = new Set([tc])
+  } else {
+    selectedTestCases.value = new Set()
+  }
   selectedTestCase.value = tc
+  selectedStep.value = null
+}
+
+function toggleTestCaseSelection(tc: TestCase) {
+  const set = selectedTestCases.value
+  if (set.has(tc)) {
+    set.delete(tc)
+    selectedTestCase.value = set.size > 0 ? [...set][set.size - 1] : null
+  } else {
+    set.add(tc)
+    selectedTestCase.value = tc
+  }
+  selectedStep.value = null
+}
+
+function selectTestCaseRange(visibleList: TestCase[], tc: TestCase) {
+  const anchor = selectedTestCase.value
+  if (!anchor) { selectTestCase(tc); return }
+  const from = visibleList.indexOf(anchor)
+  const to = visibleList.indexOf(tc)
+  if (from < 0 || to < 0) { selectTestCase(tc); return }
+  const start = Math.min(from, to)
+  const end = Math.max(from, to)
+  selectedTestCases.value = new Set(visibleList.slice(start, end + 1))
+  // Keep anchor as selectedTestCase for next shift-click
   selectedStep.value = null
 }
 
@@ -448,17 +481,34 @@ function addTestCase() {
 }
 
 function deleteTestCase() {
-  if (!selectedFolder.value || !selectedTestCase.value) return
+  if (!selectedFolder.value || selectedTestCases.value.size === 0) return
   const folder = selectedFolder.value
-  const tc = selectedTestCase.value
-  const index = folder.testCases.indexOf(tc)
+  const toDelete = [...selectedTestCases.value]
+  // Capture each item with its original index (in reverse order for safe splicing)
+  const entries = toDelete
+    .map(tc => ({ tc, index: folder.testCases.indexOf(tc) }))
+    .filter(e => e.index >= 0)
+    .sort((a, b) => b.index - a.index)
 
-  folder.testCases.splice(index, 1)
+  for (const { tc } of entries) {
+    folder.testCases.splice(folder.testCases.indexOf(tc), 1)
+  }
   selectTestCase(null)
 
   undo.record({
-    undo: () => { folder.testCases.splice(Math.min(index, folder.testCases.length), 0, tc); selectTestCase(tc) },
-    redo: () => { folder.testCases.splice(folder.testCases.indexOf(tc), 1); selectTestCase(null) },
+    undo: () => {
+      for (const { tc, index } of [...entries].reverse()) {
+        folder.testCases.splice(Math.min(index, folder.testCases.length), 0, tc)
+      }
+      selectedTestCases.value = new Set(toDelete)
+      selectedTestCase.value = toDelete[0]
+    },
+    redo: () => {
+      for (const { tc } of entries) {
+        folder.testCases.splice(folder.testCases.indexOf(tc), 1)
+      }
+      selectTestCase(null)
+    },
   })
   markChanged()
 }
@@ -473,29 +523,68 @@ function onTestCaseDragEnd(oldIndex: number, newIndex: number) {
   markChanged()
 }
 
-function moveTestCaseToFolder(tc: TestCase, targetFolder: Folder) {
-  const sourceFolder = findFolderContaining(tc)
-  if (!sourceFolder || sourceFolder === targetFolder) return
+function moveTestCasesToFolder(testCases: TestCase[], targetFolder: Folder) {
+  // Group by source folder with original indices
+  const moves: Array<{ tc: TestCase; sourceFolder: Folder; oldIndex: number }> = []
+  for (const tc of testCases) {
+    const source = findFolderContaining(tc)
+    if (!source || source === targetFolder) continue
+    moves.push({ tc, sourceFolder: source, oldIndex: source.testCases.indexOf(tc) })
+  }
+  if (moves.length === 0) return
 
-  const oldIndex = sourceFolder.testCases.indexOf(tc)
-  sourceFolder.testCases.splice(oldIndex, 1)
-  targetFolder.testCases.push(tc)
+  // Remove from sources (reverse index order to keep indices stable)
+  const bySource = new Map<Folder, typeof moves>()
+  for (const m of moves) {
+    if (!bySource.has(m.sourceFolder)) bySource.set(m.sourceFolder, [])
+    bySource.get(m.sourceFolder)!.push(m)
+  }
+  for (const entries of bySource.values()) {
+    entries.sort((a, b) => b.oldIndex - a.oldIndex)
+    for (const { sourceFolder, oldIndex } of entries) {
+      sourceFolder.testCases.splice(oldIndex, 1)
+    }
+  }
+
+  // Add to target
+  for (const { tc } of moves) {
+    targetFolder.testCases.push(tc)
+  }
 
   selectFolder(targetFolder)
-  selectTestCase(tc)
+  selectedTestCases.value = new Set(moves.map(m => m.tc))
+  selectedTestCase.value = moves[0].tc
 
   undo.record({
     undo: () => {
-      targetFolder.testCases.splice(targetFolder.testCases.indexOf(tc), 1)
-      sourceFolder.testCases.splice(Math.min(oldIndex, sourceFolder.testCases.length), 0, tc)
-      selectFolder(sourceFolder)
-      selectTestCase(tc)
+      // Remove from target
+      for (const { tc } of moves) {
+        targetFolder.testCases.splice(targetFolder.testCases.indexOf(tc), 1)
+      }
+      // Re-insert into sources at original positions
+      for (const entries of bySource.values()) {
+        for (const { tc, sourceFolder, oldIndex } of [...entries].reverse()) {
+          sourceFolder.testCases.splice(Math.min(oldIndex, sourceFolder.testCases.length), 0, tc)
+        }
+      }
+      const firstSource = moves[0].sourceFolder
+      selectFolder(firstSource)
+      selectedTestCases.value = new Set(moves.map(m => m.tc))
+      selectedTestCase.value = moves[0].tc
     },
     redo: () => {
-      sourceFolder.testCases.splice(sourceFolder.testCases.indexOf(tc), 1)
-      targetFolder.testCases.push(tc)
+      for (const entries of bySource.values()) {
+        entries.sort((a, b) => b.oldIndex - a.oldIndex)
+        for (const { sourceFolder, oldIndex } of entries) {
+          sourceFolder.testCases.splice(oldIndex, 1)
+        }
+      }
+      for (const { tc } of moves) {
+        targetFolder.testCases.push(tc)
+      }
       selectFolder(targetFolder)
-      selectTestCase(tc)
+      selectedTestCases.value = new Set(moves.map(m => m.tc))
+      selectedTestCase.value = moves[0].tc
     },
   })
   markChanged()
@@ -565,7 +654,7 @@ if (typeof window !== 'undefined') {
 export function useAppStore() {
   return {
     // State
-    project, fileName, selectedFolder, selectedTestCase, selectedStep,
+    project, fileName, selectedFolder, selectedTestCase, selectedTestCases, selectedStep,
     hasUnsavedChanges, dialog,
     // Computed
     isFileOpen, testCases, steps, canUndo, canRedo,
@@ -578,8 +667,9 @@ export function useAppStore() {
     selectFolder, addFolder, deleteFolder, onFolderDragChange,
     allFolders: () => project.value ? allFolders(project.value.folders) : [],
     // Test cases
-    selectTestCase, addTestCase, deleteTestCase, onTestCaseDragEnd,
-    moveTestCaseToFolder,
+    selectTestCase, toggleTestCaseSelection, selectTestCaseRange,
+    addTestCase, deleteTestCase, onTestCaseDragEnd,
+    moveTestCasesToFolder,
     // Steps
     selectStep, addStep, deleteStep, onStepDragEnd,
     // Edits
