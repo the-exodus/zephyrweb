@@ -2,6 +2,8 @@ import { ref, computed, triggerRef } from 'vue'
 import type { Project, Folder, TestCase, Step } from '../types'
 import { parse, serialize, readFile, uid } from '../services/xmlService'
 import * as undo from '../services/undoManager'
+import { buildSystemPrompt, sendMessage, applyResult } from '../services/aiService'
+import type { FolderPayload } from '../services/aiService'
 
 // --- State ---
 
@@ -13,6 +15,21 @@ const selectedTestCase = ref<TestCase | null>(null)
 const selectedTestCases = ref(new Set<TestCase>())
 const selectedStep = ref<Step | null>(null)
 const hasUnsavedChanges = ref(false)
+
+// AI panel state
+export interface AiMessage {
+  role: 'user' | 'assistant'
+  content: string
+  proposal?: {
+    summary: string
+    data: FolderPayload
+    status: 'pending' | 'accepted' | 'rejected'
+    folder: Folder
+  }
+}
+const showAiPanel = ref(false)
+const aiMessages = ref<AiMessage[]>([])
+const aiLoading = ref(false)
 
 // Dialog state
 const dialog = ref<{
@@ -94,6 +111,36 @@ function markChanged() {
   schedulePersist()
 }
 
+// --- Settings ---
+
+const SETTINGS_KEY = 'zephyrEdit.settings'
+const showSettings = ref(false)
+const apiKey = ref('')
+
+function initSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY)
+    if (raw) {
+      const settings = JSON.parse(raw)
+      apiKey.value = settings.apiKey ?? ''
+    } else {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: '' }))
+    }
+  } catch {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: '' }))
+  }
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: apiKey.value }))
+  } catch {
+    // Storage full or unavailable
+  }
+}
+
+initSettings()
+
 // --- LocalStorage persistence ---
 
 const STORAGE_KEY = 'zephyrEdit.state'
@@ -135,11 +182,15 @@ function restoreFromStorage(): boolean {
   }
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function assignUids(p: Project) {
+  let nextId = 1
   for (const f of allFolders(p.folders)) {
     f._uid = uid()
     for (const tc of f.testCases) {
       tc._uid = uid()
+      if (UUID_RE.test(tc.id)) tc.id = String(nextId++)
       for (const s of tc.steps) {
         s._uid = uid()
       }
@@ -239,10 +290,11 @@ async function save() {
   if (!project.value) return
   const content = serialize(project.value)
 
+  const bytes = encodeISO8859(content)
   if (fileHandle.value) {
     try {
       const writable = await fileHandle.value.createWritable()
-      await writable.write(content)
+      await writable.write(bytes)
       await writable.close()
       hasUnsavedChanges.value = false
       return
@@ -266,7 +318,7 @@ async function saveAs() {
         types: [{ description: 'XML files', accept: { 'text/xml': ['.xml'] } }],
       })
       const writable = await handle.createWritable()
-      await writable.write(content)
+      await writable.write(encodeISO8859(content))
       await writable.close()
       fileHandle.value = handle
       const file = await handle.getFile()
@@ -283,8 +335,14 @@ async function saveAs() {
   hasUnsavedChanges.value = false
 }
 
+function encodeISO8859(str: string): Uint8Array {
+  const bytes = new Uint8Array(str.length)
+  for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i) & 0xFF
+  return bytes
+}
+
 function downloadFile(content: string, name: string) {
-  const blob = new Blob([content], { type: 'text/xml' })
+  const blob = new Blob([encodeISO8859(content)], { type: 'text/xml' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -458,7 +516,7 @@ function addTestCase() {
   const folder = selectedFolder.value
   const tc: TestCase = {
     _uid: uid(),
-    id: crypto.randomUUID(),
+    id: '0',
     key: '',
     name: 'New Test Case',
     priority: 'High',
@@ -637,6 +695,82 @@ function onStepDragEnd(oldIndex: number, newIndex: number) {
   markChanged()
 }
 
+// --- AI operations ---
+
+async function sendAiMessage(text: string) {
+  if (!selectedFolder.value || !apiKey.value) return
+
+  const folder = selectedFolder.value
+  aiMessages.value.push({ role: 'user', content: text })
+  aiLoading.value = true
+
+  try {
+    const systemPrompt = buildSystemPrompt(folder)
+    // Build messages for API — strip proposal metadata
+    const messages = aiMessages.value.map(m => ({ role: m.role, content: m.content }))
+
+    const response = await sendMessage(messages, systemPrompt, apiKey.value)
+
+    if (response.type === 'answer' || response.type === 'question') {
+      aiMessages.value.push({ role: 'assistant', content: response.text })
+    } else {
+      aiMessages.value.push({
+        role: 'assistant',
+        content: response.summary,
+        proposal: { summary: response.summary, data: response.data, status: 'pending', folder },
+      })
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    aiMessages.value.push({ role: 'assistant', content: `Error: ${message}` })
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+function acceptProposal(msg: AiMessage) {
+  if (!msg.proposal || msg.proposal.status !== 'pending') return
+  const { data, folder } = msg.proposal
+
+  // Snapshot for undo
+  const prevName = folder.name
+  const prevChildren = [...folder.children]
+  const prevTestCases = [...folder.testCases]
+
+  // Apply
+  const merged = applyResult(folder, data)
+  folder.name = merged.name
+  folder.children = merged.children
+  folder.testCases = merged.testCases
+
+  msg.proposal.status = 'accepted'
+
+  undo.record({
+    undo: () => {
+      folder.name = prevName
+      folder.children = prevChildren
+      folder.testCases = prevTestCases
+    },
+    redo: () => {
+      const re = applyResult(folder, data)
+      folder.name = re.name
+      folder.children = re.children
+      folder.testCases = re.testCases
+    },
+  })
+  markChanged()
+  triggerRef(project)
+}
+
+function rejectProposal(msg: AiMessage) {
+  if (!msg.proposal || msg.proposal.status !== 'pending') return
+  msg.proposal.status = 'rejected'
+}
+
+function clearAiChat() {
+  aiMessages.value = []
+}
+
 // --- Init: restore from localStorage ---
 
 restoreFromStorage()
@@ -657,7 +791,8 @@ export function useAppStore() {
   return {
     // State
     project, fileName, selectedFolder, selectedTestCase, selectedTestCases, selectedStep,
-    hasUnsavedChanges, dialog,
+    hasUnsavedChanges, dialog, showSettings, apiKey,
+    showAiPanel, aiMessages, aiLoading,
     // Computed
     isFileOpen, testCases, steps, canUndo, canRedo,
     statusFilePath, statusContext, statusModified, title,
@@ -678,5 +813,9 @@ export function useAppStore() {
     recordPropertyEdit, markChanged,
     // Dialog
     confirm, resolveDialog,
+    // Settings
+    saveSettings,
+    // AI
+    sendAiMessage, acceptProposal, rejectProposal, clearAiChat,
   }
 }
