@@ -54,5 +54,20 @@ const store = useAppStore()
     >
       Redo
     </button>
+    <div class="flex-1"></div>
+    <button
+      @click="store.showAiPanel.value = !store.showAiPanel.value"
+      :class="['px-3 py-1 text-sm rounded transition-colors', store.showAiPanel.value ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'hover:bg-gray-200']"
+      title="Toggle AI panel"
+    >
+      AI
+    </button>
+    <button
+      @click="store.showSettings.value = true"
+      class="px-3 py-1 text-sm rounded hover:bg-gray-200 transition-colors"
+      title="Settings"
+    >
+      Settings
+    </button>
   </div>
 </template>

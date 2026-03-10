@@ -14,6 +14,15 @@ const selectedTestCases = ref(new Set<TestCase>())
 const selectedStep = ref<Step | null>(null)
 const hasUnsavedChanges = ref(false)
 
+// AI panel state
+export interface AiMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+const showAiPanel = ref(false)
+const aiMessages = ref<AiMessage[]>([])
+const aiLoading = ref(false)
+
 // Dialog state
 const dialog = ref<{
   visible: boolean
@@ -93,6 +102,36 @@ function markChanged() {
   if (!undo.getIsPerforming()) hasUnsavedChanges.value = true
   schedulePersist()
 }
+
+// --- Settings ---
+
+const SETTINGS_KEY = 'zephyrEdit.settings'
+const showSettings = ref(false)
+const apiKey = ref('')
+
+function initSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY)
+    if (raw) {
+      const settings = JSON.parse(raw)
+      apiKey.value = settings.apiKey ?? ''
+    } else {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: '' }))
+    }
+  } catch {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: '' }))
+  }
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: apiKey.value }))
+  } catch {
+    // Storage full or unavailable
+  }
+}
+
+initSettings()
 
 // --- LocalStorage persistence ---
 
@@ -657,7 +696,8 @@ export function useAppStore() {
   return {
     // State
     project, fileName, selectedFolder, selectedTestCase, selectedTestCases, selectedStep,
-    hasUnsavedChanges, dialog,
+    hasUnsavedChanges, dialog, showSettings, apiKey,
+    showAiPanel, aiMessages, aiLoading,
     // Computed
     isFileOpen, testCases, steps, canUndo, canRedo,
     statusFilePath, statusContext, statusModified, title,
@@ -678,5 +718,7 @@ export function useAppStore() {
     recordPropertyEdit, markChanged,
     // Dialog
     confirm, resolveDialog,
+    // Settings
+    saveSettings,
   }
 }

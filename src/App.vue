@@ -9,6 +9,8 @@ import TestCasePanel from './components/TestCasePanel.vue'
 import StepPanel from './components/StepPanel.vue'
 import StatusBar from './components/StatusBar.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
+import AiPanel from './components/AiPanel.vue'
 
 const store = useAppStore()
 
@@ -48,8 +50,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 <template>
   <div class="flex flex-col h-screen bg-white text-gray-900">
     <AppToolbar />
-    <div class="flex-1 min-h-0">
-      <Splitpanes class="h-full">
+    <div class="flex flex-1 min-h-0">
+      <Splitpanes class="h-full flex-1 min-w-0">
         <Pane :size="25" :min-size="15">
           <FolderPanel />
         </Pane>
@@ -60,8 +62,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <StepPanel />
         </Pane>
       </Splitpanes>
+      <div v-if="store.showAiPanel.value" class="w-80 shrink-0 h-full">
+        <AiPanel />
+      </div>
     </div>
     <StatusBar />
     <ConfirmDialog />
+    <SettingsDialog />
   </div>
 </template>
