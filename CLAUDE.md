@@ -5,9 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 - `npm run dev` — Start Vite dev server
-- `npm run build` — TypeScript check (`vue-tsc -b`) + Vite production build
+- `npm run build` — TypeScript check (`vue-tsc --noEmit`) + Vite production build to `docs/`
 - `npm run preview` — Preview production build
-- `npx vue-tsc -b --noEmit` — Type-check only (no build)
+- `npx vue-tsc --noEmit` — Type-check only (no build)
 
 ## Stack
 
@@ -38,6 +38,18 @@ XML file → `xmlService.parse()` → reactive `Project` tree → `useAppStore()
 ### Drag-and-drop
 
 vuedraggable wraps all three lists. Folder tree uses nested draggable instances with `group="folders"` for cross-level moves. Cross-list folder moves produce separate `removed` and `added` events — the store tracks `pendingFolderDrag` to pair them into a single undo action. Steps use `.drag-handle`, test cases use `.drag-cell` as drag handles.
+
+### Deployment
+
+Production build outputs to `docs/` (not `dist/`) with `base: './'` for relative asset paths. Designed for GitHub Pages serving from the `docs/` folder on `master`.
+
+### Multi-select
+
+Test cases support Ctrl+click (toggle individual) and Shift+click (range select). Selection state is a `Set<TestCase>` in the store. Batch delete and move-to-folder operate on the full selection.
+
+### Identity
+
+Folders, test cases, and steps each have a `_uid: number` field assigned by `uid()` from `xmlService.ts`. These are runtime-only (not serialized to XML) and used as Vue `:key` values. `assignUids()` re-assigns them when restoring from localStorage.
 
 ### Persistence
 
