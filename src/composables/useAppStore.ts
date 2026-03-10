@@ -139,6 +139,7 @@ function assignUids(p: Project) {
   for (const f of allFolders(p.folders)) {
     f._uid = uid()
     for (const tc of f.testCases) {
+      tc._uid = uid()
       for (const s of tc.steps) {
         s._uid = uid()
       }
@@ -456,6 +457,7 @@ function addTestCase() {
   if (!selectedFolder.value) return
   const folder = selectedFolder.value
   const tc: TestCase = {
+    _uid: uid(),
     id: crypto.randomUUID(),
     key: '',
     name: 'New Test Case',

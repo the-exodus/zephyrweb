@@ -11,6 +11,7 @@ export interface Issue {
 }
 
 export interface TestCase {
+  _uid: number
   id: string
   key: string
   name: string

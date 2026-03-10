@@ -155,7 +155,7 @@ function folderPath(folder: Folder): string {
         <tbody v-if="sortKey">
           <tr
             v-for="tc in sortedTestCases"
-            :key="tc.id"
+            :key="tc._uid"
             @click="selectRow(tc, $event)"
             class="border-b border-gray-100 cursor-pointer"
             :class="isSelected(tc) ? 'bg-blue-50' : 'hover:bg-gray-50'"
@@ -179,7 +179,7 @@ function folderPath(folder: Folder): string {
         <draggable
           v-else
           :list="store.testCases.value"
-          item-key="id"
+          item-key="_uid"
           tag="tbody"
           :animation="150"
           ghost-class="sortable-ghost"

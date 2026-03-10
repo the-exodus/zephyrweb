@@ -87,6 +87,7 @@ export function parse(xmlText: string): Project {
     }
 
     const tc: TestCase = {
+      _uid: uid(),
       id: tcElem.getAttribute('id')!,
       key: tcElem.getAttribute('key')!,
       name: getText(tcElem, 'name'),
