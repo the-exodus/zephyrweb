@@ -276,13 +276,17 @@ export function generateChangelog(folder: Folder, operations: Operation[]): stri
       }
       case 'batch_update': {
         const tcs = op._uids.map(u => tcByUid.get(u)).filter((tc): tc is TestCase => !!tc)
+        const target = tcs.length <= 5
+          ? tcs.map(tc => `"${tc.name}"`).join(', ')
+          : `${tcs.length} test cases`
         for (const [key, val] of Object.entries(op.fields)) {
           if (!UPDATABLE_TC_FIELDS.has(key)) continue
-          if (tcs.length <= 5) {
-            const names = tcs.map(tc => `"${tc.name}"`).join(', ')
-            lines.push(`\u2022 ${key} \u2192 "${val}" on: ${names}`)
+          if (key === 'customFields') {
+            const cfs = val as Array<{ name: string; value: string }>
+            const summary = cfs.map(cf => `${cf.name} \u2192 "${cf.value}"`).join(', ')
+            lines.push(`\u2022 ${summary} on ${target}`)
           } else {
-            lines.push(`\u2022 ${key} \u2192 "${val}" on ${tcs.length} test cases`)
+            lines.push(`\u2022 ${key} \u2192 "${val}" on ${target}`)
           }
         }
         break
