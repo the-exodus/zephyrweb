@@ -290,10 +290,11 @@ async function save() {
   if (!project.value) return
   const content = serialize(project.value)
 
+  const bytes = encodeISO8859(content)
   if (fileHandle.value) {
     try {
       const writable = await fileHandle.value.createWritable()
-      await writable.write(content)
+      await writable.write(bytes)
       await writable.close()
       hasUnsavedChanges.value = false
       return
@@ -317,7 +318,7 @@ async function saveAs() {
         types: [{ description: 'XML files', accept: { 'text/xml': ['.xml'] } }],
       })
       const writable = await handle.createWritable()
-      await writable.write(content)
+      await writable.write(encodeISO8859(content))
       await writable.close()
       fileHandle.value = handle
       const file = await handle.getFile()
@@ -334,8 +335,14 @@ async function saveAs() {
   hasUnsavedChanges.value = false
 }
 
+function encodeISO8859(str: string): Uint8Array {
+  const bytes = new Uint8Array(str.length)
+  for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i) & 0xFF
+  return bytes
+}
+
 function downloadFile(content: string, name: string) {
-  const blob = new Blob([content], { type: 'text/xml' })
+  const blob = new Blob([encodeISO8859(content)], { type: 'text/xml' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -509,7 +516,7 @@ function addTestCase() {
   const folder = selectedFolder.value
   const tc: TestCase = {
     _uid: uid(),
-    id: '',
+    id: '0',
     key: '',
     name: 'New Test Case',
     priority: 'High',

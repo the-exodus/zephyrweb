@@ -75,7 +75,7 @@ Rules for "result" responses:
 - Return the COMPLETE folder tree (same structure as provided), with your changes applied.
 - Only modify fields relevant to the user's request. Preserve everything else exactly.
 - Preserve "id" and "key" fields on existing test cases exactly as-is.
-- For NEW test cases, set "id" to "" (empty string) and "key" to "" (empty string).
+- For NEW test cases, set "id" to "0" and "key" to "" (empty string).
 - Valid priorities: "High", "Normal", "Low"
 - Valid statuses: "Draft", "Approved", "Deprecated"
 - Steps have: description (string|null), expectedResult (string|null), testData (string|null)
