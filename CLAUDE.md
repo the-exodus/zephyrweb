@@ -57,22 +57,46 @@ Project state auto-saves to `localStorage` (debounced 500ms) after every change.
 
 ### File I/O
 
-Uses File System Access API (`showOpenFilePicker`/`showSaveFilePicker`) with fallback to `<input type="file">` and download for browsers without support. Reads UTF-8 with ISO-8859-1 fallback for legacy exports.
+Uses File System Access API (`showOpenFilePicker`/`showSaveFilePicker`) with fallback to `<input type="file">` and download for browsers without support. Reads UTF-8 with ISO-8859-1 fallback for legacy exports. Output is encoded as ISO-8859-1 bytes (matching Zephyr Scale's format) despite the `encoding="UTF-8"` XML declaration.
+
+### Custom fields
+
+Test cases have a `customFields: CustomField[]` array where each entry has `{name, type, value}`. Two known fields are always present in the model: `Scenario` (`SINGLE_LINE_TEXT`) and `System` (`SINGLE_CHOICE_SELECT_LIST`). `ensureKnownCustomFields()` in `xmlService.ts` backfills these on parse, localStorage restore, new test case creation, and AI merge. Empty custom fields (value `""`) are omitted when serializing to XML. The detail pane in `TestCasePanel.vue` always shows known fields with a `(none)` placeholder when empty, so users can add values even if the imported file didn't have them. Any other custom fields found in the XML are preserved generically.
+
+### Test case IDs
+
+The `id` field on test cases is a numeric string assigned by Zephyr Scale on import. New test cases created in the app use `id: "0"`. Never use UUIDs — Zephyr rejects non-numeric IDs. IDs don't need to be unique (Zephyr replaces them on import). `assignUids()` migrates any legacy UUID IDs from localStorage to sequential integers.
 
 ## XML Format
 
 Step text fields use `<br />` in XML ↔ `\n` in the UI. All text fields wrapped in CDATA. Folder hierarchy is flat in XML (slash-separated `fullPath` attributes) but stored as a tree in the app. See `../ZephyrEdit/zephyr-xml-file-format.md` for the full schema.
 
+### AI integration
+
+`src/services/aiService.ts` provides Claude API integration. The AI panel (`AiPanel.vue`) scopes conversations to the selected folder and its subfolders. The folder tree is serialized to JSON (stripping `_uid`, `index`, and metadata fields) and included in the system prompt, which is rebuilt on every message so Claude sees current data.
+
+Claude always responds with JSON in one of three formats: `{"type": "answer", "text": "..."}`, `{"type": "question", "text": "..."}`, or `{"type": "result", "summary": "...", "data": <folder tree>}`. Result responses show Apply/Reject buttons — applying replaces the folder's data via `applyResult()` which re-assigns `_uid`s and restores metadata from originals by matching on `id`. The whole apply is a single undo action.
+
+API calls go directly from the browser using the `anthropic-dangerous-direct-browser-access` header (no proxy needed). The user's API key is stored in localStorage under `zephyrEdit.settings`. Model: `claude-sonnet-4-6`, no extended thinking.
+
+**Known limitation**: The full-replacement approach means large folders (200+ test cases) can exceed output token limits. This needs a different strategy (e.g., granular edit operations) for large datasets.
+
+### Settings
+
+API key stored in `localStorage['zephyrEdit.settings']`. `SettingsDialog.vue` provides the UI. Initialized on module load — if absent, created with empty key.
+
 ## Component hierarchy
 
 ```
 App.vue                         — keyboard shortcuts, splitpanes layout
-├── AppToolbar.vue              — Open/Save/SaveAs/Close/Undo/Redo
+├── AppToolbar.vue              — Open/Save/SaveAs/Close/Undo/Redo/AI toggle/Settings
 ├── FolderPanel.vue             — draggable root list
 │   └── FolderTreeNode.vue      — recursive, expand/collapse, inline name edit
-├── TestCasePanel.vue           — table with sortable columns, move-to-folder dialog
+├── TestCasePanel.vue           — table with sortable columns, detail pane, move-to-folder dialog
 ├── StepPanel.vue               — draggable list
 │   └── StepCard.vue            — fields use EditableText
+├── AiPanel.vue                 — AI chat panel (togglable, right side)
 ├── StatusBar.vue
-└── ConfirmDialog.vue           — Teleported modal, driven by store.dialog state
+├── ConfirmDialog.vue           — Teleported modal, driven by store.dialog state
+└── SettingsDialog.vue          — API key configuration
 ```

@@ -191,6 +191,8 @@ function assignUids(p: Project) {
     for (const tc of f.testCases) {
       tc._uid = uid()
       if (UUID_RE.test(tc.id)) tc.id = String(nextId++)
+      if (!tc.customFields) tc.customFields = []
+      ensureKnownCustomFields(tc.customFields)
       for (const s of tc.steps) {
         s._uid = uid()
       }
