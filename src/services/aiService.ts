@@ -305,6 +305,12 @@ function executeSearch(folder: Folder, input: SearchInput): { results: Record<st
     const re = new RegExp(input.pattern, 'i')
     const searchIn = input.search_in?.length ? new Set(input.search_in) : undefined
     filtered = filtered.filter(e => textMatchesPattern(e.tc, re, searchIn))
+    // Sort: name matches first, then by original order
+    filtered.sort((a, b) => {
+      const aName = re.test(a.tc.name) ? 0 : 1
+      const bName = re.test(b.tc.name) ? 0 : 1
+      return aName - bName
+    })
   }
 
   const totalMatches = filtered.length
@@ -572,9 +578,18 @@ export async function sendMessage(
 
       if (block.name === 'search_test_cases') {
         try {
-          const result = executeSearch(folder, (block.input ?? {}) as SearchInput)
-          const summary = `Found ${result.totalMatches} test case(s)` +
-            (block.input?.pattern ? ` matching "${block.input.pattern}"` : '')
+          const searchInput = (block.input ?? {}) as SearchInput
+          const result = executeSearch(folder, searchInput)
+          const parts: string[] = []
+          if (searchInput.pattern) parts.push(`pattern: "${searchInput.pattern}"`)
+          if (searchInput.fields?.folder) parts.push(`folder: "${searchInput.fields.folder}"`)
+          if (searchInput.fields?.priority) parts.push(`priority: ${searchInput.fields.priority}`)
+          if (searchInput.fields?.status) parts.push(`status: ${searchInput.fields.status}`)
+          if (searchInput.search_in?.length) parts.push(`in: ${searchInput.search_in.join(', ')}`)
+          const query = parts.length ? ` (${parts.join(', ')})` : ''
+          const names = result.results.slice(0, 5).map(r => `"${r.name}"`).join(', ')
+          const more = result.totalMatches > 5 ? ` + ${result.totalMatches - 5} more` : ''
+          const summary = `Search${query} → ${result.totalMatches} result(s): ${names}${more}`
           callbacks?.onToolProgress?.(summary)
           toolResults.push({
             type: 'tool_result',
@@ -595,7 +610,9 @@ export async function sendMessage(
         try {
           const input = (block.input ?? {}) as GetInput
           const result = executeGet(folder, input)
-          callbacks?.onToolProgress?.(`Retrieved ${input._uids.length} test case(s)`)
+          const names = result.slice(0, 5).map(r => `"${r.name}"`).join(', ')
+          const more = result.length > 5 ? ` + ${result.length - 5} more` : ''
+          callbacks?.onToolProgress?.(`Get ${result.length} case(s): ${names}${more}`)
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
