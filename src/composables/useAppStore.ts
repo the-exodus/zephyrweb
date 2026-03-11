@@ -25,10 +25,12 @@ export interface AiMessage {
     status: 'pending' | 'accepted' | 'rejected'
     folder: Folder
   }
+  toolProgress?: string[]
 }
 const showAiPanel = ref(false)
 const aiMessages = ref<AiMessage[]>([])
 const aiLoading = ref(false)
+const aiToolProgress = ref<string[]>([])
 
 // Dialog state
 const dialog = ref<{
@@ -705,16 +707,21 @@ async function sendAiMessage(text: string) {
   const folder = selectedFolder.value
   aiMessages.value.push({ role: 'user', content: text })
   aiLoading.value = true
+  aiToolProgress.value = []
 
   try {
     const systemPrompt = buildSystemPrompt(folder)
     // Build messages for API — strip proposal metadata
     const messages = aiMessages.value.map(m => ({ role: m.role, content: m.content }))
 
-    const response = await sendMessage(messages, systemPrompt, apiKey.value)
+    const response = await sendMessage(messages, systemPrompt, apiKey.value, folder, (summary) => {
+      aiToolProgress.value = [...aiToolProgress.value, summary]
+    })
+
+    const progress = aiToolProgress.value.length > 0 ? [...aiToolProgress.value] : undefined
 
     if (response.type === 'answer') {
-      aiMessages.value.push({ role: 'assistant', content: response.text })
+      aiMessages.value.push({ role: 'assistant', content: response.text, toolProgress: progress })
     } else {
       const changelog = generateChangelog(folder, response.operations)
       const content = response.reasoning
@@ -723,6 +730,7 @@ async function sendAiMessage(text: string) {
       aiMessages.value.push({
         role: 'assistant',
         content,
+        toolProgress: progress,
         proposal: { operations: response.operations, status: 'pending', folder },
       })
     }
@@ -731,6 +739,7 @@ async function sendAiMessage(text: string) {
     aiMessages.value.push({ role: 'assistant', content: `Error: ${message}` })
   } finally {
     aiLoading.value = false
+    aiToolProgress.value = []
   }
 }
 
@@ -782,7 +791,7 @@ export function useAppStore() {
     // State
     project, fileName, selectedFolder, selectedTestCase, selectedTestCases, selectedStep,
     hasUnsavedChanges, dialog, showSettings, apiKey,
-    showAiPanel, aiMessages, aiLoading,
+    showAiPanel, aiMessages, aiLoading, aiToolProgress,
     // Computed
     isFileOpen, testCases, steps, canUndo, canRedo,
     statusFilePath, statusContext, statusModified, title,

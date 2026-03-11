@@ -1,49 +1,19 @@
 import type { Folder, TestCase } from '../types'
 import { uid, ensureKnownCustomFields } from './xmlService'
 
-// --- Input serialization (what we send to Claude) ---
+// --- Input serialization (lightweight summary for system prompt) ---
 
-interface FolderPayload {
+interface FolderSummary {
   name: string
-  children: FolderPayload[]
-  testCases: Array<{
-    _uid: number
-    id: string
-    key?: string
-    name: string
-    priority: string
-    status: string
-    objective?: string | null
-    customFields?: Array<{ name: string; type: string; value: string }>
-    steps: Array<Record<string, string>>
-  }>
+  children: FolderSummary[]
+  testCases: Array<{ _uid: number; name: string }>
 }
 
-function serializeFolderTree(folder: Folder): FolderPayload {
+function serializeFolderSummary(folder: Folder): FolderSummary {
   return {
     name: folder.name,
-    children: folder.children.map(serializeFolderTree),
-    testCases: folder.testCases.map(tc => {
-      const entry: FolderPayload['testCases'][number] = {
-        _uid: tc._uid,
-        id: tc.id,
-        name: tc.name,
-        priority: tc.priority,
-        status: tc.status,
-        steps: tc.steps.map(s => {
-          const step: Record<string, string> = {}
-          if (s.description != null) step.description = s.description
-          if (s.expectedResult != null) step.expectedResult = s.expectedResult
-          if (s.testData != null) step.testData = s.testData
-          return step
-        }),
-      }
-      if (tc.key) entry.key = tc.key
-      if (tc.objective) entry.objective = tc.objective
-      const nonEmpty = tc.customFields.filter(cf => cf.value)
-      if (nonEmpty.length > 0) entry.customFields = nonEmpty.map(cf => ({ name: cf.name, type: cf.type, value: cf.value }))
-      return entry
-    }),
+    children: folder.children.map(serializeFolderSummary),
+    testCases: folder.testCases.map(tc => ({ _uid: tc._uid, name: tc.name })),
   }
 }
 
@@ -59,14 +29,69 @@ export type Operation =
   | { op: 'delete_step'; _uid: number; stepIndex: number }
   | { op: 'create_folder'; parent: string; name: string }
   | { op: 'delete_folder'; folder: string }
+  | { op: 'regex_replace'; _uids: number[]; field: string; pattern: string; replacement: string }
 
 export type AiResponse =
   | { type: 'answer'; text: string }
   | { type: 'result'; operations: Operation[]; reasoning?: string }
 
-// --- Tool definition ---
+// --- Tool definitions ---
 
-const TOOL_DEFINITION = {
+const SEARCH_TOOL = {
+  name: 'search_test_cases',
+  description: 'Search for test cases matching criteria. Returns _uid and name for each match, plus any additional fields requested via "include". Use this to find test cases before retrieving full details or making changes.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      pattern: {
+        type: 'string' as const,
+        description: 'Regex pattern (case-insensitive) to match against test case name, objective, step descriptions, step expected results, step test data, and custom field values. Omit to match all test cases.',
+      },
+      fields: {
+        type: 'object' as const,
+        description: 'Filter by exact field values.',
+        properties: {
+          priority: { type: 'string' as const },
+          status: { type: 'string' as const },
+          folder: { type: 'string' as const, description: 'Folder name to restrict search to (exact match, not recursive)' },
+        },
+      },
+      include: {
+        type: 'array' as const,
+        items: { type: 'string' as const },
+        description: 'Additional fields to include in results beyond _uid and name. Options: "priority", "status", "objective", "customFields", "stepCount", "folder", "id", "key".',
+      },
+      limit: {
+        type: 'number' as const,
+        description: 'Max results to return. Default 50.',
+      },
+    },
+    required: [] as string[],
+  },
+}
+
+const GET_TOOL = {
+  name: 'get_test_cases',
+  description: 'Get detailed data for specific test cases by _uid. Returns all fields by default, or a subset if "include" is specified. Use after searching to retrieve full details including steps.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      _uids: {
+        type: 'array' as const,
+        items: { type: 'number' as const },
+        description: 'Array of test case _uid values to retrieve.',
+      },
+      include: {
+        type: 'array' as const,
+        items: { type: 'string' as const },
+        description: 'Fields to include. Options: "priority", "status", "objective", "customFields", "steps", "id", "key", "folder". Default: all fields.',
+      },
+    },
+    required: ['_uids'] as string[],
+  },
+}
+
+const APPLY_OPERATIONS_TOOL = {
   name: 'apply_operations',
   description: 'Apply edit operations to the test case data. Use this when the user asks to make changes. Each operation must have an "op" field specifying the type.',
   input_schema: {
@@ -74,7 +99,7 @@ const TOOL_DEFINITION = {
     properties: {
       operations: {
         type: 'array' as const,
-        description: 'Array of edit operations. Each must have "op" (e.g. "update_test_case", "batch_update", "add_test_case", "delete_test_case", "update_step", "add_step", "delete_step", "create_folder", "delete_folder") and operation-specific fields as described in the system prompt.',
+        description: 'Array of edit operations. Each must have "op" (e.g. "update_test_case", "batch_update", "add_test_case", "delete_test_case", "update_step", "add_step", "delete_step", "create_folder", "delete_folder", "regex_replace") and operation-specific fields as described in the system prompt.',
         items: {
           type: 'object' as const,
           properties: {
@@ -91,44 +116,61 @@ const TOOL_DEFINITION = {
 // --- System prompt ---
 
 export function buildSystemPrompt(folder: Folder): string {
-  const data = JSON.stringify(serializeFolderTree(folder), null, 2)
+  const summary = JSON.stringify(serializeFolderSummary(folder), null, 2)
   return `You are an assistant for a Zephyr Scale test case editor. The user is viewing a folder of test cases and may ask you to analyze, explain, or edit them.
 
-When the user asks to make changes, use the apply_operations tool. You may include reasoning or explanation in your text before calling the tool.
+The folder structure below shows folder names and test case names with their _uid identifiers. To see full test case details (steps, custom fields, etc.), use the search_test_cases and get_test_cases tools.
 
-If the user's request is ambiguous or you need more information, ask a clarifying question instead of guessing. Only call the tool when you are confident about what changes to make.
+When the user asks to make changes, first use search/get tools to find and verify the relevant test cases, then use apply_operations to make the changes. You may include reasoning or explanation in your text.
 
-Available operation types:
+If the user's request is ambiguous or you need more information, ask a clarifying question instead of guessing.
 
-update_test_case \u2014 Update fields on an existing test case
-  { "op": "update_test_case", "_uid": <_uid>, "fields": { ... } }
-  Updatable: name, priority, status, objective, customFields
+Available tools:
 
-batch_update \u2014 Update the same fields on multiple test cases at once (preferred for bulk changes)
-  { "op": "batch_update", "_uids": [<_uid1>, <_uid2>, ...], "fields": { ... } }
-  Same updatable fields as update_test_case.
+search_test_cases — Find test cases matching a regex pattern and/or field filters.
+  Returns _uid + name by default; use "include" to add more fields.
+  The pattern searches across: name, objective, step text, custom field values.
 
-update_step \u2014 Update fields on a step
-  { "op": "update_step", "_uid": <test case _uid>, "stepIndex": <0-based>, "fields": { ... } }
-  Updatable: description, expectedResult, testData
+get_test_cases — Retrieve full details for specific test cases by _uid.
+  Returns all fields by default, or specify "include" for a subset.
 
-add_test_case \u2014 Create a new test case in a folder
-  { "op": "add_test_case", "folder": "<folder path>", "testCase": { "name": "...", "priority": "...", "status": "...", "objective": null, "steps": [{ "description": "...", "expectedResult": "...", "testData": null }] } }
+apply_operations — Apply edit operations. Operation types:
 
-delete_test_case \u2014 Remove a test case
-  { "op": "delete_test_case", "_uid": <_uid> }
+  update_test_case — Update fields on an existing test case
+    { "op": "update_test_case", "_uid": <_uid>, "fields": { ... } }
+    Updatable: name, priority, status, objective, customFields
 
-add_step \u2014 Append a step to a test case
-  { "op": "add_step", "_uid": <test case _uid>, "step": { "description": "...", "expectedResult": "...", "testData": null } }
+  batch_update — Update the same fields on multiple test cases at once (preferred for bulk changes)
+    { "op": "batch_update", "_uids": [<_uid1>, <_uid2>, ...], "fields": { ... } }
+    Same updatable fields as update_test_case.
 
-delete_step \u2014 Remove a step by index
-  { "op": "delete_step", "_uid": <test case _uid>, "stepIndex": <0-based> }
+  update_step — Update fields on a step
+    { "op": "update_step", "_uid": <test case _uid>, "stepIndex": <0-based>, "fields": { ... } }
+    Updatable: description, expectedResult, testData
 
-create_folder \u2014 Create a new subfolder
-  { "op": "create_folder", "parent": "<parent folder path>", "name": "New Folder" }
+  add_test_case — Create a new test case in a folder
+    { "op": "add_test_case", "folder": "<folder path>", "testCase": { "name": "...", "priority": "...", "status": "...", "objective": null, "steps": [{ "description": "...", "expectedResult": "...", "testData": null }] } }
 
-delete_folder \u2014 Remove a folder and all its contents (test cases and subfolders)
-  { "op": "delete_folder", "folder": "<folder path>" }
+  delete_test_case — Remove a test case
+    { "op": "delete_test_case", "_uid": <_uid> }
+
+  add_step — Append a step to a test case
+    { "op": "add_step", "_uid": <test case _uid>, "step": { "description": "...", "expectedResult": "...", "testData": null } }
+
+  delete_step — Remove a step by index
+    { "op": "delete_step", "_uid": <test case _uid>, "stepIndex": <0-based> }
+
+  create_folder — Create a new subfolder
+    { "op": "create_folder", "parent": "<parent folder path>", "name": "New Folder" }
+
+  delete_folder — Remove a folder and all its contents (test cases and subfolders)
+    { "op": "delete_folder", "folder": "<folder path>" }
+
+  regex_replace — Apply a regex find/replace to a text field across multiple test cases (preferred for bulk text transformations)
+    { "op": "regex_replace", "_uids": [<_uid1>, ...], "field": "<field>", "pattern": "<regex>", "replacement": "<string>" }
+    field: "name", "objective", "steps.description", "steps.expectedResult", "steps.testData"
+    Pattern is a JavaScript regex (case-sensitive). Replacement supports $1, $2 etc. for capture groups.
+    Applied to every matching test case; for step fields, applied to every step in each test case.
 
 Rules:
 - Reference existing test cases by their "_uid" field (a unique number). Do NOT use "id".
@@ -142,88 +184,294 @@ Rules:
 - Step fields (description, expectedResult, testData) are string|null.
 - Use batch_update when applying the same change to multiple test cases.
 
-Current folder data:
-${data}`
+Current folder structure:
+${summary}`
 }
 
-// --- Call Claude API ---
+// --- Search/get helpers ---
+
+interface TcWithFolder {
+  tc: TestCase
+  folderName: string
+  folderPath: string
+}
+
+function collectTestCases(folder: Folder, path: string, result: TcWithFolder[]) {
+  for (const tc of folder.testCases) {
+    result.push({ tc, folderName: folder.name, folderPath: path })
+  }
+  for (const child of folder.children) {
+    collectTestCases(child, `${path}/${child.name}`, result)
+  }
+}
+
+function textMatchesPattern(tc: TestCase, re: RegExp): boolean {
+  if (re.test(tc.name)) return true
+  if (tc.objective && re.test(tc.objective)) return true
+  for (const step of tc.steps) {
+    if (step.description && re.test(step.description)) return true
+    if (step.expectedResult && re.test(step.expectedResult)) return true
+    if (step.testData && re.test(step.testData)) return true
+  }
+  for (const cf of tc.customFields) {
+    if (cf.value && re.test(cf.value)) return true
+  }
+  return false
+}
+
+// --- Search tool execution ---
+
+interface SearchInput {
+  pattern?: string
+  fields?: { priority?: string; status?: string; folder?: string }
+  include?: string[]
+  limit?: number
+}
+
+function executeSearch(folder: Folder, input: SearchInput): { results: Record<string, unknown>[]; totalMatches: number } {
+  const all: TcWithFolder[] = []
+  collectTestCases(folder, folder.name, all)
+
+  let filtered = all
+
+  if (input.fields?.folder) {
+    const fname = input.fields.folder
+    filtered = filtered.filter(e => e.folderName === fname)
+  }
+  if (input.fields?.priority) {
+    filtered = filtered.filter(e => e.tc.priority === input.fields!.priority)
+  }
+  if (input.fields?.status) {
+    filtered = filtered.filter(e => e.tc.status === input.fields!.status)
+  }
+
+  if (input.pattern) {
+    const re = new RegExp(input.pattern, 'i')
+    filtered = filtered.filter(e => textMatchesPattern(e.tc, re))
+  }
+
+  const totalMatches = filtered.length
+  const limit = input.limit ?? 50
+  const limited = filtered.slice(0, limit)
+  const include = new Set(input.include ?? [])
+
+  const results = limited.map(e => {
+    const r: Record<string, unknown> = { _uid: e.tc._uid, name: e.tc.name }
+    if (include.has('priority')) r.priority = e.tc.priority
+    if (include.has('status')) r.status = e.tc.status
+    if (include.has('objective')) r.objective = e.tc.objective
+    if (include.has('id')) r.id = e.tc.id
+    if (include.has('key')) r.key = e.tc.key
+    if (include.has('folder')) r.folder = e.folderPath
+    if (include.has('stepCount')) r.stepCount = e.tc.steps.length
+    if (include.has('customFields')) {
+      r.customFields = e.tc.customFields.filter(cf => cf.value).map(cf => ({ name: cf.name, type: cf.type, value: cf.value }))
+    }
+    return r
+  })
+
+  return { results, totalMatches }
+}
+
+// --- Get tool execution ---
+
+interface GetInput {
+  _uids: number[]
+  include?: string[]
+}
+
+function executeGet(folder: Folder, input: GetInput): Record<string, unknown>[] {
+  const all: TcWithFolder[] = []
+  collectTestCases(folder, folder.name, all)
+  const byUid = new Map<number, TcWithFolder>()
+  for (const e of all) byUid.set(e.tc._uid, e)
+
+  const include = input.include ? new Set(input.include) : null // null = all fields
+
+  return input._uids.map(id => {
+    const e = byUid.get(id)
+    if (!e) return { _uid: id, error: 'not found' }
+    const tc = e.tc
+    const r: Record<string, unknown> = { _uid: tc._uid, name: tc.name }
+    if (!include || include.has('priority')) r.priority = tc.priority
+    if (!include || include.has('status')) r.status = tc.status
+    if (!include || include.has('objective')) r.objective = tc.objective
+    if (!include || include.has('id')) r.id = tc.id
+    if (!include || include.has('key')) r.key = tc.key
+    if (!include || include.has('folder')) r.folder = e.folderPath
+    if (!include || include.has('customFields')) {
+      r.customFields = tc.customFields.map(cf => ({ name: cf.name, type: cf.type, value: cf.value }))
+    }
+    if (!include || include.has('steps')) {
+      r.steps = tc.steps.map(s => {
+        const step: Record<string, unknown> = {}
+        if (s.description != null) step.description = s.description
+        if (s.expectedResult != null) step.expectedResult = s.expectedResult
+        if (s.testData != null) step.testData = s.testData
+        return step
+      })
+    }
+    return r
+  })
+}
+
+// --- Content blocks for API ---
+
+interface ContentBlock {
+  type: string
+  text?: string
+  id?: string
+  name?: string
+  input?: Record<string, unknown>
+  tool_use_id?: string
+  content?: string
+  is_error?: boolean
+}
+
+type ApiMessage = {
+  role: 'user' | 'assistant'
+  content: string | ContentBlock[]
+}
+
+// --- Call Claude API with agentic tool-use loop ---
+
+const MAX_ITERATIONS = 20
 
 export async function sendMessage(
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
   systemPrompt: string,
   apiKey: string,
+  folder: Folder,
+  onToolProgress?: (summary: string) => void,
 ): Promise<AiResponse> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 32768,
-      system: systemPrompt,
-      tools: [TOOL_DEFINITION],
-      messages,
-    }),
-  })
+  const apiMessages: ApiMessage[] = messages.map(m => ({ role: m.role, content: m.content }))
+  const tools = [SEARCH_TOOL, GET_TOOL, APPLY_OPERATIONS_TOOL]
 
-  if (!res.ok) {
-    const body = await res.json().catch(() => null)
-    const msg = body?.error?.message ?? `API error ${res.status}`
-    throw new Error(msg)
-  }
+  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 16384,
+        system: systemPrompt,
+        tools,
+        messages: apiMessages,
+      }),
+    })
 
-  const body = await res.json()
-  return parseResponse(body.content ?? [], body.stop_reason)
-}
-
-// --- Parse response content blocks ---
-
-interface ContentBlock {
-  type: string
-  text?: string
-  name?: string
-  input?: Record<string, unknown>
-}
-
-function parseResponse(content: ContentBlock[], stopReason?: string): AiResponse {
-  const textParts: string[] = []
-  let operations: Operation[] | null = null
-
-  for (const block of content) {
-    if (block.type === 'text' && block.text) {
-      textParts.push(block.text)
-    } else if (block.type === 'tool_use' && block.name === 'apply_operations' && block.input) {
-      const raw = block.input.operations
-      if (Array.isArray(raw) && raw.length > 0) {
-        try {
-          operations = validateOperations(raw)
-        } catch (err) {
-          const detail = JSON.stringify(block.input, null, 2).slice(0, 500)
-          const msg = err instanceof Error ? err.message : String(err)
-          throw new Error(`Invalid tool response: ${msg}\n\nRaw input:\n${detail}`)
-        }
-      }
-      // Empty or missing operations array — ignore the tool call, fall through to text
+    if (!res.ok) {
+      const body = await res.json().catch(() => null)
+      const msg = body?.error?.message ?? `API error ${res.status}`
+      throw new Error(msg)
     }
+
+    const body = await res.json()
+    const content: ContentBlock[] = body.content ?? []
+    const stopReason: string = body.stop_reason
+
+    // Check for apply_operations — treat as final result
+    const applyBlock = content.find(b => b.type === 'tool_use' && b.name === 'apply_operations')
+    if (applyBlock?.input) {
+      const raw = applyBlock.input.operations
+      if (Array.isArray(raw) && raw.length > 0) {
+        const operations = validateOperations(raw)
+        const textParts = content.filter(b => b.type === 'text' && b.text).map(b => b.text!)
+        const reasoning = textParts.join('\n').trim() || undefined
+        return { type: 'result', operations, reasoning }
+      }
+    }
+
+    // If not a tool_use stop, return text answer
+    if (stopReason !== 'tool_use') {
+      const textParts = content.filter(b => b.type === 'text' && b.text).map(b => b.text!)
+      const text = textParts.join('\n').trim()
+
+      if (stopReason === 'max_tokens') {
+        const truncated = text
+          ? text + '\n\n(Response was cut off — try a simpler request or fewer test cases at a time)'
+          : '(Response was cut off — try a simpler request or fewer test cases at a time)'
+        return { type: 'answer', text: truncated }
+      }
+
+      return { type: 'answer', text: text || '(no response)' }
+    }
+
+    // stop_reason === 'tool_use' — execute search/get tools and continue the loop
+    apiMessages.push({ role: 'assistant', content })
+
+    const toolResults: ContentBlock[] = []
+
+    for (const block of content) {
+      if (block.type !== 'tool_use' || !block.id) continue
+
+      if (block.name === 'search_test_cases') {
+        try {
+          const result = executeSearch(folder, (block.input ?? {}) as SearchInput)
+          const summary = `Found ${result.totalMatches} test case(s)` +
+            (block.input?.pattern ? ` matching "${block.input.pattern}"` : '')
+          onToolProgress?.(summary)
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify(result),
+          })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          onToolProgress?.(`Search error: ${msg}`)
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify({ error: msg }),
+            is_error: true,
+          })
+        }
+      } else if (block.name === 'get_test_cases') {
+        try {
+          const input = (block.input ?? {}) as GetInput
+          const result = executeGet(folder, input)
+          onToolProgress?.(`Retrieved ${input._uids.length} test case(s)`)
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify(result),
+          })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          onToolProgress?.(`Get error: ${msg}`)
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify({ error: msg }),
+            is_error: true,
+          })
+        }
+      } else if (block.name === 'apply_operations') {
+        // apply_operations with empty/no ops — acknowledge it
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify({ status: 'ok', message: 'No operations to apply' }),
+        })
+      } else {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify({ error: `Unknown tool: ${block.name}` }),
+          is_error: true,
+        })
+      }
+    }
+
+    apiMessages.push({ role: 'user', content: toolResults })
   }
 
-  const reasoning = textParts.join('\n').trim()
-
-  if (stopReason === 'max_tokens') {
-    const truncated = reasoning
-      ? reasoning + '\n\n(Response was cut off — try a simpler request or fewer test cases at a time)'
-      : '(Response was cut off — try a simpler request or fewer test cases at a time)'
-    return { type: 'answer', text: truncated }
-  }
-
-  if (operations) {
-    return { type: 'result', operations, reasoning: reasoning || undefined }
-  }
-  return { type: 'answer', text: reasoning || '(no response)' }
+  throw new Error('AI agent loop exceeded maximum iterations')
 }
 
 // --- Validation ---
@@ -268,6 +516,12 @@ function validateOperations(data: unknown[]): Operation[] {
         break
       case 'delete_folder':
         if (typeof op.folder !== 'string') throw new Error(`operations[${i}].folder: expected string`)
+        break
+      case 'regex_replace':
+        if (!Array.isArray(op._uids)) throw new Error(`operations[${i}]._uids: expected array`)
+        if (typeof op.field !== 'string') throw new Error(`operations[${i}].field: expected string`)
+        if (typeof op.pattern !== 'string') throw new Error(`operations[${i}].pattern: expected string`)
+        if (typeof op.replacement !== 'string') throw new Error(`operations[${i}].replacement: expected string`)
         break
       default:
         throw new Error(`operations[${i}]: unknown op "${op.op}"`)
@@ -367,10 +621,45 @@ export function generateChangelog(folder: Folder, operations: Operation[]): stri
         lines.push(`\u2022 Deleted folder "${op.folder}" and all its contents`)
         break
       }
+      case 'regex_replace': {
+        const tcs = op._uids.map(u => tcByUid.get(u)).filter((tc): tc is TestCase => !!tc)
+        const re = safeRegex(op.pattern)
+        let matchCount = 0
+        if (re) {
+          for (const tc of tcs) {
+            matchCount += countRegexMatches(tc, op.field, re)
+          }
+        }
+        const target = tcs.length <= 5
+          ? tcs.map(tc => `"${tc.name}"`).join(', ')
+          : `${tcs.length} test cases`
+        lines.push(`\u2022 Regex replace on ${op.field}: /${op.pattern}/ \u2192 "${op.replacement}" across ${target} (${matchCount} match${matchCount !== 1 ? 'es' : ''})`)
+        break
+      }
     }
   }
 
   return lines.join('\n')
+}
+
+function safeRegex(pattern: string): RegExp | null {
+  try { return new RegExp(pattern, 'g') } catch { return null }
+}
+
+function countRegexMatches(tc: TestCase, field: string, re: RegExp): number {
+  let count = 0
+  if (field === 'name') {
+    re.lastIndex = 0; if (re.test(tc.name)) count++
+  } else if (field === 'objective') {
+    if (tc.objective) { re.lastIndex = 0; if (re.test(tc.objective)) count++ }
+  } else if (field.startsWith('steps.')) {
+    const stepField = field.slice(6) as 'description' | 'expectedResult' | 'testData'
+    for (const step of tc.steps) {
+      const val = step[stepField]
+      if (val) { re.lastIndex = 0; if (re.test(val)) count++ }
+    }
+  }
+  return count
 }
 
 function appendFieldChanges(lines: string[], name: string, fields: Record<string, unknown>, tc: TestCase | undefined) {
@@ -509,6 +798,26 @@ export function applyOperations(folder: Folder, operations: Operation[]): void {
           if (idx >= 0) {
             f.children.splice(idx, 1)
             break
+          }
+        }
+        break
+      }
+      case 'regex_replace': {
+        const re = safeRegex(op.pattern)
+        if (!re) break
+        for (const u of op._uids) {
+          const tc = tcByUid.get(u)
+          if (!tc) continue
+          if (op.field === 'name') {
+            tc.name = tc.name.replace(re, op.replacement)
+          } else if (op.field === 'objective') {
+            if (tc.objective) tc.objective = tc.objective.replace(re, op.replacement)
+          } else if (op.field.startsWith('steps.')) {
+            const stepField = op.field.slice(6) as 'description' | 'expectedResult' | 'testData'
+            for (const step of tc.steps) {
+              const val = step[stepField]
+              if (val) step[stepField] = val.replace(re, op.replacement)
+            }
           }
         }
         break

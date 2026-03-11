@@ -82,6 +82,7 @@ function onKeydown(e: KeyboardEvent) {
         <!-- Assistant message with proposal -->
         <div v-else-if="msg.proposal" class="space-y-2">
           <div class="text-sm rounded-lg px-3 py-2 bg-gray-100 text-gray-900 whitespace-pre-wrap">{{ msg.content }}</div>
+          <div v-if="msg.toolProgress?.length" class="text-xs text-gray-400 px-1">{{ msg.toolProgress.length }} tool call(s)</div>
           <div v-if="msg.proposal.status === 'pending'" class="flex gap-2 px-1">
             <button
               @click="store.acceptProposal(msg)"
@@ -97,12 +98,19 @@ function onKeydown(e: KeyboardEvent) {
         </div>
 
         <!-- Plain assistant message -->
-        <div v-else
-          class="text-sm rounded-lg px-3 py-2 whitespace-pre-wrap bg-gray-100 text-gray-900"
-        >{{ msg.content }}</div>
+        <div v-else class="space-y-1">
+          <div class="text-sm rounded-lg px-3 py-2 whitespace-pre-wrap bg-gray-100 text-gray-900">{{ msg.content }}</div>
+          <div v-if="msg.toolProgress?.length" class="text-xs text-gray-400 px-1">{{ msg.toolProgress.length }} tool call(s)</div>
+        </div>
       </div>
       <div v-if="store.aiLoading.value" class="mr-4">
-        <div class="text-sm text-gray-400 px-3 py-2">Thinking...</div>
+        <div class="text-sm text-gray-400 px-3 py-2">
+          <div v-if="store.aiToolProgress.value.length > 0" class="space-y-0.5">
+            <div v-for="(line, i) in store.aiToolProgress.value" :key="i">{{ line }}</div>
+            <div>Thinking...</div>
+          </div>
+          <div v-else>Thinking...</div>
+        </div>
       </div>
     </div>
 
