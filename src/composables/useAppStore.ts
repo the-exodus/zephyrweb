@@ -709,34 +709,41 @@ async function sendAiMessage(text: string) {
   aiLoading.value = true
   aiToolProgress.value = []
 
+  // Create assistant message early so streaming text appears immediately
+  aiMessages.value.push({ role: 'assistant', content: '' })
+  const msgIndex = aiMessages.value.length - 1
+
   try {
     const systemPrompt = buildSystemPrompt(folder)
-    // Build messages for API — strip proposal metadata
-    const messages = aiMessages.value.map(m => ({ role: m.role, content: m.content }))
+    // Build messages for API — exclude the streaming placeholder
+    const messages = aiMessages.value.slice(0, -1).map(m => ({ role: m.role, content: m.content }))
 
-    const response = await sendMessage(messages, systemPrompt, apiKey.value, folder, (summary) => {
-      aiToolProgress.value = [...aiToolProgress.value, summary]
+    const response = await sendMessage(messages, systemPrompt, apiKey.value, folder, {
+      onText: (delta) => {
+        aiMessages.value[msgIndex].content += delta
+      },
+      onToolProgress: (summary) => {
+        aiToolProgress.value = [...aiToolProgress.value, summary]
+      },
     })
 
-    const progress = aiToolProgress.value.length > 0 ? [...aiToolProgress.value] : undefined
+    const msg = aiMessages.value[msgIndex]
+    msg.toolProgress = aiToolProgress.value.length > 0 ? [...aiToolProgress.value] : undefined
 
-    if (response.type === 'answer') {
-      aiMessages.value.push({ role: 'assistant', content: response.text, toolProgress: progress })
-    } else {
+    if (response.type === 'result') {
       const changelog = generateChangelog(folder, response.operations)
-      const content = response.reasoning
-        ? response.reasoning + '\n\n' + changelog
-        : changelog
-      aiMessages.value.push({
-        role: 'assistant',
-        content,
-        toolProgress: progress,
-        proposal: { operations: response.operations, status: 'pending', folder },
-      })
+      if (msg.content && !msg.content.endsWith('\n')) msg.content += '\n\n'
+      msg.content += changelog
+      msg.proposal = { operations: response.operations, status: 'pending', folder }
     }
+    // For 'answer', text is already populated via onText streaming
+    if (!msg.content) msg.content = '(no response)'
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    aiMessages.value.push({ role: 'assistant', content: `Error: ${message}` })
+    const msg = aiMessages.value[msgIndex]
+    msg.content = msg.content
+      ? msg.content + `\n\nError: ${message}`
+      : `Error: ${message}`
   } finally {
     aiLoading.value = false
     aiToolProgress.value = []

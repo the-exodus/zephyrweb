@@ -333,19 +333,126 @@ type ApiMessage = {
   content: string | ContentBlock[]
 }
 
-// --- Call Claude API with agentic tool-use loop ---
+// --- SSE stream parser ---
+
+interface StreamResult {
+  content: ContentBlock[]
+  stopReason: string
+  hadText: boolean
+}
+
+async function processStream(
+  res: Response,
+  onText?: (delta: string) => void,
+): Promise<StreamResult> {
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const contentBlocks: ContentBlock[] = []
+  const partialJson = new Map<number, string>()
+  let stopReason = ''
+  let hadText = false
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    const events = buffer.split('\n\n')
+    buffer = events.pop()!
+
+    for (const eventStr of events) {
+      if (!eventStr.trim()) continue
+
+      let eventType = ''
+      let dataStr = ''
+      for (const line of eventStr.split('\n')) {
+        if (line.startsWith('event: ')) eventType = line.slice(7).trim()
+        else if (line.startsWith('data: ')) dataStr = line.slice(6)
+      }
+
+      if (!dataStr || eventType === 'ping') continue
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any
+      try { data = JSON.parse(dataStr) } catch { continue }
+
+      switch (eventType) {
+        case 'content_block_start': {
+          const block = data.content_block
+          const index = data.index as number
+          if (block.type === 'text') {
+            contentBlocks[index] = { type: 'text', text: '' }
+          } else if (block.type === 'tool_use') {
+            contentBlocks[index] = { type: 'tool_use', id: block.id, name: block.name, input: {} }
+            partialJson.set(index, '')
+          }
+          break
+        }
+        case 'content_block_delta': {
+          const index = data.index as number
+          const delta = data.delta
+          if (delta.type === 'text_delta' && delta.text) {
+            const block = contentBlocks[index]
+            if (block) {
+              block.text = (block.text ?? '') + delta.text
+              hadText = true
+              onText?.(delta.text)
+            }
+          } else if (delta.type === 'input_json_delta' && delta.partial_json) {
+            const prev = partialJson.get(index) ?? ''
+            partialJson.set(index, prev + delta.partial_json)
+          }
+          break
+        }
+        case 'content_block_stop': {
+          const index = data.index as number
+          const block = contentBlocks[index]
+          if (block?.type === 'tool_use') {
+            const json = partialJson.get(index)
+            if (json) {
+              try { block.input = JSON.parse(json) } catch { block.input = {} }
+            }
+            partialJson.delete(index)
+          }
+          break
+        }
+        case 'message_delta': {
+          if (data.delta?.stop_reason) stopReason = data.delta.stop_reason
+          break
+        }
+        case 'error': {
+          const msg = data.error?.message ?? 'Stream error'
+          throw new Error(msg)
+        }
+      }
+    }
+  }
+
+  return { content: contentBlocks.filter(Boolean), stopReason, hadText }
+}
+
+// --- Call Claude API with agentic tool-use loop (streaming) ---
 
 const MAX_ITERATIONS = 20
+
+export interface StreamCallbacks {
+  onText?: (delta: string) => void
+  onToolProgress?: (summary: string) => void
+}
 
 export async function sendMessage(
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
   systemPrompt: string,
   apiKey: string,
   folder: Folder,
-  onToolProgress?: (summary: string) => void,
+  callbacks?: StreamCallbacks,
 ): Promise<AiResponse> {
   const apiMessages: ApiMessage[] = messages.map(m => ({ role: m.role, content: m.content }))
   const tools = [SEARCH_TOOL, GET_TOOL, APPLY_OPERATIONS_TOOL]
+  let prevHadText = false
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -359,6 +466,7 @@ export async function sendMessage(
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 16384,
+        stream: true,
         system: systemPrompt,
         tools,
         messages: apiMessages,
@@ -371,9 +479,11 @@ export async function sendMessage(
       throw new Error(msg)
     }
 
-    const body = await res.json()
-    const content: ContentBlock[] = body.content ?? []
-    const stopReason: string = body.stop_reason
+    // Separate text between loop iterations
+    if (prevHadText) callbacks?.onText?.('\n\n')
+
+    const { content, stopReason, hadText } = await processStream(res, callbacks?.onText)
+    prevHadText = hadText
 
     // Check for apply_operations — treat as final result
     const applyBlock = content.find(b => b.type === 'tool_use' && b.name === 'apply_operations')
@@ -381,25 +491,17 @@ export async function sendMessage(
       const raw = applyBlock.input.operations
       if (Array.isArray(raw) && raw.length > 0) {
         const operations = validateOperations(raw)
-        const textParts = content.filter(b => b.type === 'text' && b.text).map(b => b.text!)
-        const reasoning = textParts.join('\n').trim() || undefined
-        return { type: 'result', operations, reasoning }
+        return { type: 'result', operations }
       }
     }
 
     // If not a tool_use stop, return text answer
     if (stopReason !== 'tool_use') {
-      const textParts = content.filter(b => b.type === 'text' && b.text).map(b => b.text!)
-      const text = textParts.join('\n').trim()
-
       if (stopReason === 'max_tokens') {
-        const truncated = text
-          ? text + '\n\n(Response was cut off — try a simpler request or fewer test cases at a time)'
-          : '(Response was cut off — try a simpler request or fewer test cases at a time)'
-        return { type: 'answer', text: truncated }
+        const warning = '\n\n(Response was cut off — try a simpler request or fewer test cases at a time)'
+        callbacks?.onText?.(warning)
       }
-
-      return { type: 'answer', text: text || '(no response)' }
+      return { type: 'answer', text: '' }
     }
 
     // stop_reason === 'tool_use' — execute search/get tools and continue the loop
@@ -415,7 +517,7 @@ export async function sendMessage(
           const result = executeSearch(folder, (block.input ?? {}) as SearchInput)
           const summary = `Found ${result.totalMatches} test case(s)` +
             (block.input?.pattern ? ` matching "${block.input.pattern}"` : '')
-          onToolProgress?.(summary)
+          callbacks?.onToolProgress?.(summary)
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
@@ -423,7 +525,7 @@ export async function sendMessage(
           })
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
-          onToolProgress?.(`Search error: ${msg}`)
+          callbacks?.onToolProgress?.(`Search error: ${msg}`)
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
@@ -435,7 +537,7 @@ export async function sendMessage(
         try {
           const input = (block.input ?? {}) as GetInput
           const result = executeGet(folder, input)
-          onToolProgress?.(`Retrieved ${input._uids.length} test case(s)`)
+          callbacks?.onToolProgress?.(`Retrieved ${input._uids.length} test case(s)`)
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
@@ -443,7 +545,7 @@ export async function sendMessage(
           })
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
-          onToolProgress?.(`Get error: ${msg}`)
+          callbacks?.onToolProgress?.(`Get error: ${msg}`)
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
@@ -452,7 +554,6 @@ export async function sendMessage(
           })
         }
       } else if (block.name === 'apply_operations') {
-        // apply_operations with empty/no ops — acknowledge it
         toolResults.push({
           type: 'tool_result',
           tool_use_id: block.id,

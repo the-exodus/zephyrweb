@@ -27,7 +27,15 @@ function scrollToBottom() {
   })
 }
 
-watch(() => store.aiMessages.value.length, scrollToBottom)
+// Scroll on new messages and during streaming (content growth)
+watch(
+  () => {
+    const msgs = store.aiMessages.value
+    const last = msgs[msgs.length - 1]
+    return msgs.length + (last?.content?.length ?? 0)
+  },
+  scrollToBottom,
+)
 
 function send() {
   const text = input.value.trim()
@@ -97,8 +105,8 @@ function onKeydown(e: KeyboardEvent) {
           <div v-else class="text-xs text-gray-400 px-1">Rejected</div>
         </div>
 
-        <!-- Plain assistant message -->
-        <div v-else class="space-y-1">
+        <!-- Plain assistant message (hidden while empty during streaming) -->
+        <div v-else-if="msg.content" class="space-y-1">
           <div class="text-sm rounded-lg px-3 py-2 whitespace-pre-wrap bg-gray-100 text-gray-900">{{ msg.content }}</div>
           <div v-if="msg.toolProgress?.length" class="text-xs text-gray-400 px-1">{{ msg.toolProgress.length }} tool call(s)</div>
         </div>
@@ -107,9 +115,8 @@ function onKeydown(e: KeyboardEvent) {
         <div class="text-sm text-gray-400 px-3 py-2">
           <div v-if="store.aiToolProgress.value.length > 0" class="space-y-0.5">
             <div v-for="(line, i) in store.aiToolProgress.value" :key="i">{{ line }}</div>
-            <div>Thinking...</div>
           </div>
-          <div v-else>Thinking...</div>
+          <div v-if="!store.aiMessages.value[store.aiMessages.value.length - 1]?.content">Thinking...</div>
         </div>
       </div>
     </div>
