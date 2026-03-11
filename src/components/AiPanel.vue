@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from 'vue'
+import { marked } from 'marked'
 import { useAppStore } from '../composables/useAppStore'
+
+marked.setOptions({ gfm: true, breaks: true })
+
+function renderMarkdown(text: string): string {
+  return marked.parse(text) as string
+}
 
 const store = useAppStore()
 const input = ref('')
@@ -91,7 +98,7 @@ function onKeydown(e: KeyboardEvent) {
         <div v-else-if="msg.segments?.length" class="space-y-2">
           <div class="text-sm rounded-lg px-3 py-2 bg-gray-100 text-gray-900">
             <template v-for="(seg, j) in msg.segments" :key="j">
-              <div v-if="seg.type === 'text'" class="whitespace-pre-wrap">{{ seg.content }}</div>
+              <div v-if="seg.type === 'text'" class="prose-ai" v-html="renderMarkdown(seg.content)"></div>
               <div v-else class="text-xs text-gray-500 my-1.5 py-1 px-2 bg-white rounded border border-gray-200">{{ seg.content }}</div>
             </template>
           </div>
@@ -113,8 +120,9 @@ function onKeydown(e: KeyboardEvent) {
 
         <!-- Fallback for messages without segments (e.g. from older conversations) -->
         <div v-else-if="msg.content"
-          class="text-sm rounded-lg px-3 py-2 whitespace-pre-wrap bg-gray-100 text-gray-900"
-        >{{ msg.content }}</div>
+          class="text-sm rounded-lg px-3 py-2 bg-gray-100 text-gray-900 prose-ai"
+          v-html="renderMarkdown(msg.content)"
+        ></div>
       </div>
       <div v-if="store.aiLoading.value && !store.aiMessages.value[store.aiMessages.value.length - 1]?.content" class="mr-4">
         <div class="text-sm text-gray-400 px-3 py-2">Thinking...</div>
@@ -140,3 +148,91 @@ function onKeydown(e: KeyboardEvent) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.prose-ai :deep(h1),
+.prose-ai :deep(h2),
+.prose-ai :deep(h3) {
+  font-weight: 600;
+  margin-top: 0.75em;
+  margin-bottom: 0.25em;
+  line-height: 1.3;
+}
+.prose-ai :deep(h1) { font-size: 1.1em; }
+.prose-ai :deep(h2) { font-size: 1em; }
+.prose-ai :deep(h3) { font-size: 0.95em; }
+
+.prose-ai :deep(p) {
+  margin: 0.4em 0;
+}
+
+.prose-ai :deep(ul),
+.prose-ai :deep(ol) {
+  margin: 0.4em 0;
+  padding-left: 1.5em;
+}
+.prose-ai :deep(ul) { list-style: disc; }
+.prose-ai :deep(ol) { list-style: decimal; }
+.prose-ai :deep(li) { margin: 0.15em 0; }
+
+.prose-ai :deep(code) {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.15em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.prose-ai :deep(pre) {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.5em;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 0.4em 0;
+}
+.prose-ai :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.prose-ai :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+}
+.prose-ai :deep(th),
+.prose-ai :deep(td) {
+  border: 1px solid #d1d5db;
+  padding: 0.3em 0.5em;
+  text-align: left;
+}
+.prose-ai :deep(th) {
+  background: rgba(0, 0, 0, 0.04);
+  font-weight: 600;
+}
+
+.prose-ai :deep(blockquote) {
+  border-left: 3px solid #d1d5db;
+  padding-left: 0.75em;
+  margin: 0.4em 0;
+  color: #6b7280;
+}
+
+.prose-ai :deep(hr) {
+  border: none;
+  border-top: 1px solid #d1d5db;
+  margin: 0.75em 0;
+}
+
+.prose-ai :deep(a) {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.prose-ai :deep(> :first-child) {
+  margin-top: 0;
+}
+.prose-ai :deep(> :last-child) {
+  margin-bottom: 0;
+}
+</style>

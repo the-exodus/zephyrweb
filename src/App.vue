@@ -50,22 +50,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 <template>
   <div class="flex flex-col h-screen bg-white text-gray-900">
     <AppToolbar />
-    <div class="flex flex-1 min-h-0">
-      <Splitpanes class="h-full flex-1 min-w-0">
-        <Pane :size="25" :min-size="15">
-          <FolderPanel />
-        </Pane>
-        <Pane :size="50" :min-size="20">
-          <TestCasePanel />
-        </Pane>
-        <Pane :size="25" :min-size="15">
-          <StepPanel />
-        </Pane>
-      </Splitpanes>
-      <div v-if="store.showAiPanel.value" class="w-80 shrink-0 h-full">
+    <Splitpanes class="flex-1 min-h-0">
+      <Pane :size="store.showAiPanel.value ? 75 : 100" min-size="50">
+        <Splitpanes class="h-full">
+          <Pane :size="25" :min-size="15">
+            <FolderPanel />
+          </Pane>
+          <Pane :size="50" :min-size="20">
+            <TestCasePanel />
+          </Pane>
+          <Pane :size="25" :min-size="15">
+            <StepPanel />
+          </Pane>
+        </Splitpanes>
+      </Pane>
+      <Pane v-if="store.showAiPanel.value" :size="25" :min-size="15">
         <AiPanel />
-      </div>
-    </div>
+      </Pane>
+    </Splitpanes>
     <StatusBar />
     <ConfirmDialog />
     <SettingsDialog />
