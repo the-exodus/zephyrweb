@@ -61,7 +61,7 @@ Uses File System Access API (`showOpenFilePicker`/`showSaveFilePicker`) with fal
 
 ### Custom fields
 
-Test cases have a `customFields: CustomField[]` array where each entry has `{name, type, value}`. Two known fields are always present in the model: `Scenario` (`SINGLE_LINE_TEXT`) and `System` (`SINGLE_CHOICE_SELECT_LIST`). `ensureKnownCustomFields()` in `xmlService.ts` backfills these on parse, localStorage restore, new test case creation, and AI merge. When backfilling Scenario, if the field is missing or empty and a folder name is available, it defaults to the containing folder's name. Empty custom fields (value `""`) are omitted when serializing to XML. The detail pane in `TestCasePanel.vue` always shows known fields with a `(none)` placeholder when empty, so users can add values even if the imported file didn't have them. Any other custom fields found in the XML are preserved generically.
+Test cases have a `customFields: CustomField[]` array where each entry has `{name, type, value}`. Two known fields are always present in the model: `Scenario` (`SINGLE_LINE_TEXT`) and `System` (`SINGLE_CHOICE_SELECT_LIST`). `ensureKnownCustomFields()` in `xmlService.ts` backfills these on parse, localStorage restore, new test case creation, and AI merge. The Scenario field is always set to the containing folder's name — on parse, localStorage restore, new test case creation, and when moving test cases between folders. Empty custom fields (value `""`) are omitted when serializing to XML. The detail pane in `TestCasePanel.vue` always shows known fields with a `(none)` placeholder when empty, so users can add values even if the imported file didn't have them. Any other custom fields found in the XML are preserved generically.
 
 ### Test case IDs
 
@@ -73,19 +73,24 @@ Step text fields use `<br />` in XML ↔ `\n` in the UI. All text fields wrapped
 
 ### AI integration
 
-`src/services/aiService.ts` provides Claude API integration via an agentic tool-use loop. The AI panel (`AiPanel.vue`) scopes conversations to the selected folder and its subfolders.
+`src/services/aiService.ts` provides Claude API integration via a streaming agentic tool-use loop. The AI panel (`AiPanel.vue`) scopes conversations to the selected folder and its subfolders.
 
-The system prompt includes only a lightweight folder summary (folder tree with `_uid` + `name` per test case, no full data). Claude uses tools to retrieve details on demand:
+**Tool registration design**: All tool capabilities are defined via structured JSON schemas in the `tools` array sent to the API — not as prose in the system prompt. The `apply_operations` tool uses `oneOf` with 13 operation variant schemas, each with a `const` discriminator on `op`, typed properties, and `required` arrays. Shared sub-schemas (`STEP_SCHEMA`, `CUSTOM_FIELD_SCHEMA`, `UPDATABLE_FIELDS_SCHEMA`) reduce duplication. The system prompt contains only app context, domain rules (valid priorities/statuses), and the folder summary.
 
-- `search_test_cases` — regex pattern match across name, objective, step text, custom field values. Supports field filters (priority, status, folder) and an `include` param to select which fields appear in results. Returns `_uid` + `name` by default. `limit` param (default 50), response includes `totalMatches`.
-- `get_test_cases` — fetch full or partial data for specific `_uid`s. `include` param selects fields (priority, status, objective, customFields, steps, id, key, folder). Default: all fields.
-- `apply_operations` — apply edit operations (same as before).
+**System prompt**: Lightweight folder summary only (`_uid` + `name` per test case, no full data). The system prompt is rebuilt on every message so Claude sees current data.
 
-The `sendMessage` function runs an agentic loop: call the API, if `stop_reason === 'tool_use'` execute search/get tools locally against the in-memory folder, return `tool_result` messages, and loop (max 20 iterations) until Claude responds with `end_turn` or calls `apply_operations`. Intermediate tool-use/tool-result messages are ephemeral within one `sendMessage` call — cross-turn history uses plain text only. The system prompt is rebuilt each turn.
+**Tools** (executed locally against in-memory data, not API calls):
+- `search_test_cases` — regex pattern match across text fields. `search_in` restricts which fields are searched (name, objective, steps, customFields). Field filters: priority, status, folder, `min_steps`/`max_steps`, `customField: {name, value}`. `include` param selects result fields. Returns `_uid` + `name` by default. Results sorted by relevance (name matches first). `limit` param (default 50), response includes `totalMatches`.
+- `get_test_cases` — fetch full or partial data for specific `_uid`s. `include` param selects fields. Default: all fields.
+- `apply_operations` — apply edit operations. Stops the agentic loop and returns operations to the UI for user approval.
 
-Available operations: `update_test_case`, `batch_update` (same fields on multiple test cases), `update_step`, `add_test_case`, `delete_test_case`, `add_step`, `delete_step`, `create_folder`, `delete_folder`, `regex_replace` (bulk regex find/replace on a text field across multiple test cases — supports test case fields `name`/`objective` and step fields via `steps.description`/`steps.expectedResult`/`steps.testData`). Result responses generate a human-readable changelog from the operations (showing old→new values) displayed with Apply/Reject buttons. `applyOperations()` mutates the folder in place. Undo uses deep snapshots (`snapshotFolder`/`restoreFolder`) taken before and after applying.
+**Agentic loop**: `sendMessage` calls the API with SSE streaming. If `stop_reason === 'tool_use'`, it executes search/get tools locally and loops (max 20 iterations) until `end_turn` or `apply_operations`. Intermediate tool-use/tool-result messages are ephemeral within one call — cross-turn history uses plain text only.
 
-API calls go directly from the browser using the `anthropic-dangerous-direct-browser-access` header (no proxy needed). The user's API key is stored in localStorage under `zephyrEdit.settings`. Model: `claude-sonnet-4-6`, max_tokens: 16384, no extended thinking.
+**Streaming**: SSE streaming via `processStream()`. Text deltas appear word-by-word in the UI. Tool calls and results are shown inline as `MessageSegment`s (interleaved text and tool segments) in the assistant message. Tool progress summaries show search terms and matched case names.
+
+**Operations**: `update_test_case`, `batch_update`, `update_step`, `add_test_case`, `delete_test_case`, `add_step` (with optional `atIndex` for insertion), `delete_step`, `move_step`, `set_custom_field` (update single custom field without fetching all), `move_test_case` (moves between folders, updates Scenario), `create_folder`, `delete_folder`, `regex_replace` (bulk regex on `name`/`objective`/`steps.description`/`steps.expectedResult`/`steps.testData`). Result responses generate a human-readable changelog displayed with Apply/Reject buttons. `applyOperations()` mutates the folder in place. Undo uses deep snapshots (`snapshotFolder`/`restoreFolder`).
+
+API calls go directly from the browser using the `anthropic-dangerous-direct-browser-access` header (no proxy needed). The user's API key is stored in localStorage under `zephyrEdit.settings`. Model: `claude-sonnet-4-6`, max_tokens: 16384, `output_config: { effort: 'medium' }`, no extended thinking.
 
 ### Settings
 
