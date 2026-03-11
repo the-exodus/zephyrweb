@@ -333,13 +333,21 @@ const APPLY_OPERATIONS_TOOL = {
 
 // --- System prompt ---
 
-export function buildSystemPrompt(folder: Folder): string {
+export function buildSystemPrompt(folder: Folder, projectContext?: string): string {
   const summary = JSON.stringify(serializeFolderSummary(folder), null, 2)
-  return `You are an assistant for a Zephyr Scale test case editor. The user is viewing a folder of test cases and may ask you to analyze, explain, or edit them.
+  const contextBlock = projectContext?.trim()
+    ? `\n\nProject context:\n${projectContext.trim()}\n`
+    : ''
 
+  return `You are an assistant for a Zephyr Scale (Data Center edition) test case editor. The user is viewing a folder of test cases and may ask you to analyze, explain, or edit them.
+
+You work exclusively with Zephyr Scale XML exports. You do not have live access to Zephyr Scale or Jira. Any changes you make only take effect when the file is re-imported. You cannot verify whether owners, components, or labels exist in the live system.
+${contextBlock}
 The folder structure below shows folder names and test case names with their _uid identifiers. To see full test case details (steps, custom fields, etc.), use the search_test_cases and get_test_cases tools.
 
 When the user asks to make changes, first use search/get tools to find and verify the relevant test cases, then use apply_operations to make the changes.
+
+If you are uncertain about Zephyr Scale behaviour, field definitions, or import/export specifics, use web search to look it up. Prefer Data Center/Server documentation over Cloud documentation, as this is an on-premises installation. Cite the page so the user can verify.
 
 Rules:
 - Reference existing test cases by _uid (a unique number). Do NOT use "id".
@@ -521,7 +529,8 @@ interface ContentBlock {
   name?: string
   input?: Record<string, unknown>
   tool_use_id?: string
-  content?: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  content?: any
   is_error?: boolean
 }
 
@@ -585,6 +594,22 @@ async function processStream(
           } else if (block.type === 'tool_use') {
             contentBlocks[index] = { type: 'tool_use', id: block.id, name: block.name, input: {} }
             partialJson.set(index, '')
+          } else if (block.type === 'server_tool_use') {
+            contentBlocks[index] = { type: 'server_tool_use', id: block.id, name: block.name, input: {} }
+            partialJson.set(index, '')
+            if (block.name === 'web_search') {
+              onText?.(`\n[Searching the web...]\n`)
+            }
+          } else if (block.type === 'web_search_tool_result') {
+            // Entire result arrives in content_block_start
+            contentBlocks[index] = { type: 'web_search_tool_result', tool_use_id: block.tool_use_id, content: block.content }
+            // Show result titles in the stream
+            const results = block.content?.filter?.((r: { type: string }) => r.type === 'web_search_result') ?? []
+            if (results.length > 0) {
+              const titles = results.slice(0, 3).map((r: { title: string }) => r.title).join(', ')
+              const more = results.length > 3 ? ` + ${results.length - 3} more` : ''
+              onText?.(`[Found: ${titles}${more}]\n`)
+            }
           }
           break
         }
@@ -607,7 +632,7 @@ async function processStream(
         case 'content_block_stop': {
           const index = data.index as number
           const block = contentBlocks[index]
-          if (block?.type === 'tool_use') {
+          if (block?.type === 'tool_use' || block?.type === 'server_tool_use') {
             const json = partialJson.get(index)
             if (json) {
               try { block.input = JSON.parse(json) } catch { block.input = {} }
@@ -648,7 +673,13 @@ export async function sendMessage(
   callbacks?: StreamCallbacks,
 ): Promise<AiResponse> {
   const apiMessages: ApiMessage[] = messages.map(m => ({ role: m.role, content: m.content }))
-  const tools = [SEARCH_TOOL, GET_TOOL, APPLY_OPERATIONS_TOOL]
+  const WEB_SEARCH_TOOL = {
+    type: 'web_search_20250305' as const,
+    name: 'web_search' as const,
+    allowed_domains: ['support.smartbear.com'],
+    max_uses: 5,
+  }
+  const tools = [SEARCH_TOOL, GET_TOOL, APPLY_OPERATIONS_TOOL, WEB_SEARCH_TOOL]
   let prevHadText = false
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
@@ -691,6 +722,13 @@ export async function sendMessage(
         const operations = validateOperations(raw)
         return { type: 'result', operations }
       }
+    }
+
+    // pause_turn: API paused a long-running turn (e.g. web search) — feed response back to continue
+    if (stopReason === 'pause_turn') {
+      apiMessages.push({ role: 'assistant', content })
+      prevHadText = hadText
+      continue
     }
 
     // If not a tool_use stop, return text answer

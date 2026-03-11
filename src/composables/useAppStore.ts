@@ -120,6 +120,7 @@ function markChanged() {
 const SETTINGS_KEY = 'zephyrEdit.settings'
 const showSettings = ref(false)
 const apiKey = ref('')
+const projectContext = ref('')
 
 function initSettings() {
   try {
@@ -127,17 +128,18 @@ function initSettings() {
     if (raw) {
       const settings = JSON.parse(raw)
       apiKey.value = settings.apiKey ?? ''
+      projectContext.value = settings.projectContext ?? ''
     } else {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: '' }))
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: '', projectContext: '' }))
     }
   } catch {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: '' }))
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: '', projectContext: '' }))
   }
 }
 
 function saveSettings() {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: apiKey.value }))
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey: apiKey.value, projectContext: projectContext.value }))
   } catch {
     // Storage full or unavailable
   }
@@ -719,7 +721,7 @@ async function sendAiMessage(text: string) {
   const msgIndex = aiMessages.value.length - 1
 
   try {
-    const systemPrompt = buildSystemPrompt(folder)
+    const systemPrompt = buildSystemPrompt(folder, projectContext.value)
     // Build messages for API — exclude the streaming placeholder
     const messages = aiMessages.value.slice(0, -1).map(m => ({ role: m.role, content: m.content }))
 
@@ -809,7 +811,7 @@ export function useAppStore() {
   return {
     // State
     project, fileName, selectedFolder, selectedTestCase, selectedTestCases, selectedStep,
-    hasUnsavedChanges, dialog, showSettings, apiKey,
+    hasUnsavedChanges, dialog, showSettings, apiKey, projectContext,
     showAiPanel, aiMessages, aiLoading,
     // Computed
     isFileOpen, testCases, steps, canUndo, canRedo,

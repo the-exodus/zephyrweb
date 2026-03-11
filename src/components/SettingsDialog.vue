@@ -4,13 +4,18 @@ import { useAppStore } from '../composables/useAppStore'
 
 const store = useAppStore()
 const localKey = ref('')
+const localContext = ref('')
 
 watch(() => store.showSettings.value, (visible) => {
-  if (visible) localKey.value = store.apiKey.value
+  if (visible) {
+    localKey.value = store.apiKey.value
+    localContext.value = store.projectContext.value
+  }
 })
 
 function save() {
   store.apiKey.value = localKey.value
+  store.projectContext.value = localContext.value
   store.saveSettings()
   store.showSettings.value = false
 }
@@ -28,7 +33,7 @@ function cancel() {
       @mousedown.self="cancel"
     >
       <div
-        class="bg-white rounded-lg shadow-xl max-w-sm w-full mx-4 p-6"
+        class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 p-6"
         @keydown.escape="cancel"
       >
         <h3 class="font-semibold text-gray-900 mb-4">Settings</h3>
@@ -38,7 +43,14 @@ function cancel() {
           type="password"
           placeholder="sk-ant-..."
           class="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          @keydown.enter="save"
+          @keydown.escape="cancel"
+        />
+        <label class="block text-sm text-gray-700 mb-1 mt-4">Project Context</label>
+        <textarea
+          v-model="localContext"
+          rows="5"
+          placeholder="Describe your testing context, systems under test, conventions, etc. This is included in the AI system prompt."
+          class="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
           @keydown.escape="cancel"
         />
         <div class="flex justify-end gap-2 mt-6">
