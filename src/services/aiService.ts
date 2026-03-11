@@ -1009,6 +1009,7 @@ export function applyOperations(folder: Folder, operations: Operation[]): void {
           if (idx >= 0) { f.testCases.splice(idx, 1); break }
         }
         targetFolder.testCases.push(tc)
+        ensureKnownCustomFields(tc.customFields, targetFolder.name)
         break
       }
       case 'create_folder': {

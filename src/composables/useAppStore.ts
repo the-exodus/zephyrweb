@@ -533,7 +533,7 @@ function addTestCase() {
     updatedBy: null,
     updatedOn: null,
     owner: null,
-    customFields: ensureKnownCustomFields([]),
+    customFields: ensureKnownCustomFields([], folder.name),
     issues: [],
     steps: [],
   }
@@ -613,9 +613,10 @@ function moveTestCasesToFolder(testCases: TestCase[], targetFolder: Folder) {
     }
   }
 
-  // Add to target
+  // Add to target and update Scenario to match new folder
   for (const { tc } of moves) {
     targetFolder.testCases.push(tc)
+    ensureKnownCustomFields(tc.customFields, targetFolder.name)
   }
 
   selectFolder(targetFolder)
@@ -632,6 +633,7 @@ function moveTestCasesToFolder(testCases: TestCase[], targetFolder: Folder) {
       for (const entries of bySource.values()) {
         for (const { tc, sourceFolder, oldIndex } of [...entries].reverse()) {
           sourceFolder.testCases.splice(Math.min(oldIndex, sourceFolder.testCases.length), 0, tc)
+          ensureKnownCustomFields(tc.customFields, sourceFolder.name)
         }
       }
       const firstSource = moves[0].sourceFolder
@@ -648,6 +650,7 @@ function moveTestCasesToFolder(testCases: TestCase[], targetFolder: Folder) {
       }
       for (const { tc } of moves) {
         targetFolder.testCases.push(tc)
+        ensureKnownCustomFields(tc.customFields, targetFolder.name)
       }
       selectFolder(targetFolder)
       selectedTestCases.value = new Set(moves.map(m => m.tc))
