@@ -40,9 +40,198 @@ export type AiResponse =
 
 // --- Tool definitions ---
 
+// --- Shared sub-schemas ---
+
+const STEP_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    description: { type: ['string', 'null'] as const, description: 'Step description' },
+    expectedResult: { type: ['string', 'null'] as const, description: 'Expected result' },
+    testData: { type: ['string', 'null'] as const, description: 'Test data' },
+  },
+}
+
+const CUSTOM_FIELD_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    name: { type: 'string' as const },
+    type: { type: 'string' as const, description: 'e.g. "SINGLE_LINE_TEXT", "SINGLE_CHOICE_SELECT_LIST"' },
+    value: { type: 'string' as const },
+  },
+  required: ['name', 'type', 'value'],
+}
+
+const UPDATABLE_FIELDS_SCHEMA = {
+  type: 'object' as const,
+  description: 'Fields to update. Allowed: name, priority ("Critical"/"High"/"Normal"/"Low"), status ("Draft"/"Approved"/"Deprecated"), objective, customFields (array — must include ALL custom fields for the test case, not just changed ones; use set_custom_field instead to update a single field).',
+}
+
+// --- Operation schemas ---
+
+const OP_UPDATE_TEST_CASE = {
+  type: 'object' as const,
+  description: 'Update fields on a single test case.',
+  properties: {
+    op: { type: 'string' as const, const: 'update_test_case' },
+    _uid: { type: 'number' as const, description: 'Test case _uid' },
+    fields: UPDATABLE_FIELDS_SCHEMA,
+  },
+  required: ['op', '_uid', 'fields'],
+}
+
+const OP_BATCH_UPDATE = {
+  type: 'object' as const,
+  description: 'Update the same fields on multiple test cases at once. Preferred for bulk changes.',
+  properties: {
+    op: { type: 'string' as const, const: 'batch_update' },
+    _uids: { type: 'array' as const, items: { type: 'number' as const }, description: 'Test case _uids' },
+    fields: UPDATABLE_FIELDS_SCHEMA,
+  },
+  required: ['op', '_uids', 'fields'],
+}
+
+const OP_UPDATE_STEP = {
+  type: 'object' as const,
+  description: 'Update fields on a step.',
+  properties: {
+    op: { type: 'string' as const, const: 'update_step' },
+    _uid: { type: 'number' as const, description: 'Test case _uid' },
+    stepIndex: { type: 'number' as const, description: '0-based step index' },
+    fields: { type: 'object' as const, description: 'Fields to update. Allowed: description, expectedResult, testData (all string|null).' },
+  },
+  required: ['op', '_uid', 'stepIndex', 'fields'],
+}
+
+const OP_ADD_TEST_CASE = {
+  type: 'object' as const,
+  description: 'Create a new test case in a folder.',
+  properties: {
+    op: { type: 'string' as const, const: 'add_test_case' },
+    folder: { type: 'string' as const, description: 'Folder path, e.g. "Login" or "Login/SubFolder"' },
+    testCase: {
+      type: 'object' as const,
+      properties: {
+        name: { type: 'string' as const },
+        priority: { type: 'string' as const, description: '"Critical", "High", "Normal", or "Low"' },
+        status: { type: 'string' as const, description: '"Draft", "Approved", or "Deprecated"' },
+        objective: { type: ['string', 'null'] as const },
+        customFields: { type: 'array' as const, items: CUSTOM_FIELD_SCHEMA },
+        steps: { type: 'array' as const, items: STEP_SCHEMA },
+      },
+      required: ['name', 'priority', 'status', 'steps'],
+    },
+  },
+  required: ['op', 'folder', 'testCase'],
+}
+
+const OP_DELETE_TEST_CASE = {
+  type: 'object' as const,
+  description: 'Delete a test case.',
+  properties: {
+    op: { type: 'string' as const, const: 'delete_test_case' },
+    _uid: { type: 'number' as const, description: 'Test case _uid' },
+  },
+  required: ['op', '_uid'],
+}
+
+const OP_ADD_STEP = {
+  type: 'object' as const,
+  description: 'Add a step to a test case. Appends by default, or inserts at atIndex.',
+  properties: {
+    op: { type: 'string' as const, const: 'add_step' },
+    _uid: { type: 'number' as const, description: 'Test case _uid' },
+    step: STEP_SCHEMA,
+    atIndex: { type: 'number' as const, description: '0-based insertion position (optional, appends if omitted)' },
+  },
+  required: ['op', '_uid', 'step'],
+}
+
+const OP_DELETE_STEP = {
+  type: 'object' as const,
+  description: 'Delete a step by index.',
+  properties: {
+    op: { type: 'string' as const, const: 'delete_step' },
+    _uid: { type: 'number' as const, description: 'Test case _uid' },
+    stepIndex: { type: 'number' as const, description: '0-based step index' },
+  },
+  required: ['op', '_uid', 'stepIndex'],
+}
+
+const OP_MOVE_STEP = {
+  type: 'object' as const,
+  description: 'Reorder a step within a test case.',
+  properties: {
+    op: { type: 'string' as const, const: 'move_step' },
+    _uid: { type: 'number' as const, description: 'Test case _uid' },
+    fromIndex: { type: 'number' as const, description: '0-based current position' },
+    toIndex: { type: 'number' as const, description: '0-based target position' },
+  },
+  required: ['op', '_uid', 'fromIndex', 'toIndex'],
+}
+
+const OP_SET_CUSTOM_FIELD = {
+  type: 'object' as const,
+  description: 'Set a single custom field on one or more test cases. No need to fetch or include other fields. Known fields: Scenario (SINGLE_LINE_TEXT), System (SINGLE_CHOICE_SELECT_LIST).',
+  properties: {
+    op: { type: 'string' as const, const: 'set_custom_field' },
+    _uids: { type: 'array' as const, items: { type: 'number' as const }, description: 'Test case _uids' },
+    name: { type: 'string' as const, description: 'Custom field name' },
+    type: { type: 'string' as const, description: 'Custom field type' },
+    value: { type: 'string' as const, description: 'New value' },
+  },
+  required: ['op', '_uids', 'name', 'type', 'value'],
+}
+
+const OP_MOVE_TEST_CASE = {
+  type: 'object' as const,
+  description: 'Move a test case to a different folder.',
+  properties: {
+    op: { type: 'string' as const, const: 'move_test_case' },
+    _uid: { type: 'number' as const, description: 'Test case _uid' },
+    toFolder: { type: 'string' as const, description: 'Target folder path' },
+  },
+  required: ['op', '_uid', 'toFolder'],
+}
+
+const OP_CREATE_FOLDER = {
+  type: 'object' as const,
+  description: 'Create a new subfolder.',
+  properties: {
+    op: { type: 'string' as const, const: 'create_folder' },
+    parent: { type: 'string' as const, description: 'Parent folder path' },
+    name: { type: 'string' as const, description: 'New folder name' },
+  },
+  required: ['op', 'parent', 'name'],
+}
+
+const OP_DELETE_FOLDER = {
+  type: 'object' as const,
+  description: 'Delete a folder and all its contents (test cases and subfolders).',
+  properties: {
+    op: { type: 'string' as const, const: 'delete_folder' },
+    folder: { type: 'string' as const, description: 'Folder path to delete' },
+  },
+  required: ['op', 'folder'],
+}
+
+const OP_REGEX_REPLACE = {
+  type: 'object' as const,
+  description: 'Apply a regex find/replace to a text field across multiple test cases. Preferred for bulk text transformations. For step fields, applied to every step in each test case.',
+  properties: {
+    op: { type: 'string' as const, const: 'regex_replace' },
+    _uids: { type: 'array' as const, items: { type: 'number' as const }, description: 'Test case _uids' },
+    field: { type: 'string' as const, description: 'Field to search: "name", "objective", "steps.description", "steps.expectedResult", or "steps.testData"' },
+    pattern: { type: 'string' as const, description: 'JavaScript regex pattern (case-sensitive)' },
+    replacement: { type: 'string' as const, description: 'Replacement string. Supports $1, $2 etc. for capture groups.' },
+  },
+  required: ['op', '_uids', 'field', 'pattern', 'replacement'],
+}
+
+// --- Tool definitions ---
+
 const SEARCH_TOOL = {
   name: 'search_test_cases',
-  description: 'Search for test cases matching criteria. Returns _uid and name for each match, plus any additional fields requested via "include". Use this to find test cases before retrieving full details or making changes.',
+  description: 'Search for test cases matching a regex pattern and/or field filters. Returns _uid and name for each match, plus any fields requested via "include". Use this to find test cases before retrieving full details or making changes.',
   input_schema: {
     type: 'object' as const,
     properties: {
@@ -53,7 +242,7 @@ const SEARCH_TOOL = {
       search_in: {
         type: 'array' as const,
         items: { type: 'string' as const },
-        description: 'Which fields the pattern searches. Options: "name", "objective", "steps", "customFields". Default: all.',
+        description: 'Restrict which fields the pattern searches. Options: "name", "objective", "steps", "customFields". Default: all.',
       },
       fields: {
         type: 'object' as const,
@@ -61,7 +250,7 @@ const SEARCH_TOOL = {
         properties: {
           priority: { type: 'string' as const },
           status: { type: 'string' as const },
-          folder: { type: 'string' as const, description: 'Folder name to restrict search to (exact match, not recursive)' },
+          folder: { type: 'string' as const, description: 'Folder name (exact match, not recursive)' },
           min_steps: { type: 'number' as const, description: 'Minimum number of steps (inclusive)' },
           max_steps: { type: 'number' as const, description: 'Maximum number of steps (inclusive)' },
           customField: {
@@ -112,19 +301,29 @@ const GET_TOOL = {
 
 const APPLY_OPERATIONS_TOOL = {
   name: 'apply_operations',
-  description: 'Apply edit operations to the test case data. Use this when the user asks to make changes. Each operation must have an "op" field specifying the type.',
+  description: 'Apply edit operations to the test case data. Reference test cases by _uid (not id). Use batch_update for bulk changes. Use regex_replace for bulk text transformations.',
   input_schema: {
     type: 'object' as const,
     properties: {
       operations: {
         type: 'array' as const,
-        description: 'Array of edit operations. Each must have "op" (e.g. "update_test_case", "batch_update", "add_test_case", "delete_test_case", "update_step", "add_step", "delete_step", "move_step", "set_custom_field", "move_test_case", "create_folder", "delete_folder", "regex_replace") and operation-specific fields as described in the system prompt.',
+        description: 'Array of edit operations to apply in sequence.',
         items: {
-          type: 'object' as const,
-          properties: {
-            op: { type: 'string' as const, description: 'Operation type' },
-          },
-          required: ['op'],
+          oneOf: [
+            OP_UPDATE_TEST_CASE,
+            OP_BATCH_UPDATE,
+            OP_UPDATE_STEP,
+            OP_ADD_TEST_CASE,
+            OP_DELETE_TEST_CASE,
+            OP_ADD_STEP,
+            OP_DELETE_STEP,
+            OP_MOVE_STEP,
+            OP_SET_CUSTOM_FIELD,
+            OP_MOVE_TEST_CASE,
+            OP_CREATE_FOLDER,
+            OP_DELETE_FOLDER,
+            OP_REGEX_REPLACE,
+          ],
         },
       },
     },
@@ -140,79 +339,14 @@ export function buildSystemPrompt(folder: Folder): string {
 
 The folder structure below shows folder names and test case names with their _uid identifiers. To see full test case details (steps, custom fields, etc.), use the search_test_cases and get_test_cases tools.
 
-When the user asks to make changes, first use search/get tools to find and verify the relevant test cases, then use apply_operations to make the changes. You may include reasoning or explanation in your text.
-
-If the user's request is ambiguous or you need more information, ask a clarifying question instead of guessing.
-
-Available tools:
-
-search_test_cases — Find test cases matching a regex pattern and/or field filters.
-  Returns _uid + name by default; use "include" to add more fields.
-  The pattern searches across: name, objective, step text, custom field values (or restrict with "search_in").
-  Field filters: priority, status, folder, min_steps, max_steps, customField: {name, value}.
-
-get_test_cases — Retrieve full details for specific test cases by _uid.
-  Returns all fields by default, or specify "include" for a subset.
-
-apply_operations — Apply edit operations. Operation types:
-
-  update_test_case — Update fields on an existing test case
-    { "op": "update_test_case", "_uid": <_uid>, "fields": { ... } }
-    Updatable: name, priority, status, objective, customFields
-
-  batch_update — Update the same fields on multiple test cases at once (preferred for bulk changes)
-    { "op": "batch_update", "_uids": [<_uid1>, <_uid2>, ...], "fields": { ... } }
-    Same updatable fields as update_test_case.
-
-  update_step — Update fields on a step
-    { "op": "update_step", "_uid": <test case _uid>, "stepIndex": <0-based>, "fields": { ... } }
-    Updatable: description, expectedResult, testData
-
-  add_test_case — Create a new test case in a folder
-    { "op": "add_test_case", "folder": "<folder path>", "testCase": { "name": "...", "priority": "...", "status": "...", "objective": null, "steps": [{ "description": "...", "expectedResult": "...", "testData": null }] } }
-
-  delete_test_case — Remove a test case
-    { "op": "delete_test_case", "_uid": <_uid> }
-
-  add_step — Add a step to a test case (appends by default, or insert at position with atIndex)
-    { "op": "add_step", "_uid": <test case _uid>, "step": { "description": "...", "expectedResult": "...", "testData": null }, "atIndex": <0-based, optional> }
-
-  delete_step — Remove a step by index
-    { "op": "delete_step", "_uid": <test case _uid>, "stepIndex": <0-based> }
-
-  move_step — Reorder a step within a test case
-    { "op": "move_step", "_uid": <test case _uid>, "fromIndex": <0-based>, "toIndex": <0-based> }
-
-  set_custom_field — Set a single custom field on one or more test cases (no need to include all fields)
-    { "op": "set_custom_field", "_uids": [<_uid1>, ...], "name": "Scenario", "type": "SINGLE_LINE_TEXT", "value": "..." }
-
-  move_test_case — Move a test case to a different folder
-    { "op": "move_test_case", "_uid": <_uid>, "toFolder": "<folder path>" }
-
-  create_folder — Create a new subfolder
-    { "op": "create_folder", "parent": "<parent folder path>", "name": "New Folder" }
-
-  delete_folder — Remove a folder and all its contents (test cases and subfolders)
-    { "op": "delete_folder", "folder": "<folder path>" }
-
-  regex_replace — Apply a regex find/replace to a text field across multiple test cases (preferred for bulk text transformations)
-    { "op": "regex_replace", "_uids": [<_uid1>, ...], "field": "<field>", "pattern": "<regex>", "replacement": "<string>" }
-    field: "name", "objective", "steps.description", "steps.expectedResult", "steps.testData"
-    Pattern is a JavaScript regex (case-sensitive). Replacement supports $1, $2 etc. for capture groups.
-    Applied to every matching test case; for step fields, applied to every step in each test case.
+When the user asks to make changes, first use search/get tools to find and verify the relevant test cases, then use apply_operations to make the changes.
 
 Rules:
-- Reference existing test cases by their "_uid" field (a unique number). Do NOT use "id".
+- Reference existing test cases by _uid (a unique number). Do NOT use "id".
 - Folder paths: use the folder name (e.g. "Login") or nested path (e.g. "Login/SubFolder").
 - Valid priorities: "Critical", "High", "Normal", "Low"
 - Valid statuses: "Draft", "Approved", "Deprecated"
-- customFields is an array of {name, type, value}. Known types:
-  Scenario: { "name": "Scenario", "type": "SINGLE_LINE_TEXT", "value": "..." }
-  System: { "name": "System", "type": "SINGLE_CHOICE_SELECT_LIST", "value": "..." }
-  When updating customFields via update_test_case/batch_update, include ALL custom fields for the test case.
-  To update a single custom field without fetching all fields, use set_custom_field instead.
 - Step fields (description, expectedResult, testData) are string|null.
-- Use batch_update when applying the same change to multiple test cases.
 
 Current folder structure:
 ${summary}`
