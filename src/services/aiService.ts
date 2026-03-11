@@ -25,8 +25,11 @@ export type Operation =
   | { op: 'update_step'; _uid: number; stepIndex: number; fields: Record<string, unknown> }
   | { op: 'add_test_case'; folder: string; testCase: { name: string; priority: string; status: string; objective?: string | null; customFields?: Array<{ name: string; type: string; value: string }>; steps: Array<{ description: string | null; expectedResult: string | null; testData: string | null }> } }
   | { op: 'delete_test_case'; _uid: number }
-  | { op: 'add_step'; _uid: number; step: { description: string | null; expectedResult: string | null; testData: string | null } }
+  | { op: 'add_step'; _uid: number; step: { description: string | null; expectedResult: string | null; testData: string | null }; atIndex?: number }
   | { op: 'delete_step'; _uid: number; stepIndex: number }
+  | { op: 'move_step'; _uid: number; fromIndex: number; toIndex: number }
+  | { op: 'set_custom_field'; _uids: number[]; name: string; type: string; value: string }
+  | { op: 'move_test_case'; _uid: number; toFolder: string }
   | { op: 'create_folder'; parent: string; name: string }
   | { op: 'delete_folder'; folder: string }
   | { op: 'regex_replace'; _uids: number[]; field: string; pattern: string; replacement: string }
@@ -45,7 +48,12 @@ const SEARCH_TOOL = {
     properties: {
       pattern: {
         type: 'string' as const,
-        description: 'Regex pattern (case-insensitive) to match against test case name, objective, step descriptions, step expected results, step test data, and custom field values. Omit to match all test cases.',
+        description: 'Regex pattern (case-insensitive) to match against test case text fields. By default searches all fields; use search_in to restrict.',
+      },
+      search_in: {
+        type: 'array' as const,
+        items: { type: 'string' as const },
+        description: 'Which fields the pattern searches. Options: "name", "objective", "steps", "customFields". Default: all.',
       },
       fields: {
         type: 'object' as const,
@@ -54,6 +62,17 @@ const SEARCH_TOOL = {
           priority: { type: 'string' as const },
           status: { type: 'string' as const },
           folder: { type: 'string' as const, description: 'Folder name to restrict search to (exact match, not recursive)' },
+          min_steps: { type: 'number' as const, description: 'Minimum number of steps (inclusive)' },
+          max_steps: { type: 'number' as const, description: 'Maximum number of steps (inclusive)' },
+          customField: {
+            type: 'object' as const,
+            description: 'Filter by custom field value',
+            properties: {
+              name: { type: 'string' as const },
+              value: { type: 'string' as const },
+            },
+            required: ['name', 'value'],
+          },
         },
       },
       include: {
@@ -99,7 +118,7 @@ const APPLY_OPERATIONS_TOOL = {
     properties: {
       operations: {
         type: 'array' as const,
-        description: 'Array of edit operations. Each must have "op" (e.g. "update_test_case", "batch_update", "add_test_case", "delete_test_case", "update_step", "add_step", "delete_step", "create_folder", "delete_folder", "regex_replace") and operation-specific fields as described in the system prompt.',
+        description: 'Array of edit operations. Each must have "op" (e.g. "update_test_case", "batch_update", "add_test_case", "delete_test_case", "update_step", "add_step", "delete_step", "move_step", "set_custom_field", "move_test_case", "create_folder", "delete_folder", "regex_replace") and operation-specific fields as described in the system prompt.',
         items: {
           type: 'object' as const,
           properties: {
@@ -129,7 +148,8 @@ Available tools:
 
 search_test_cases — Find test cases matching a regex pattern and/or field filters.
   Returns _uid + name by default; use "include" to add more fields.
-  The pattern searches across: name, objective, step text, custom field values.
+  The pattern searches across: name, objective, step text, custom field values (or restrict with "search_in").
+  Field filters: priority, status, folder, min_steps, max_steps, customField: {name, value}.
 
 get_test_cases — Retrieve full details for specific test cases by _uid.
   Returns all fields by default, or specify "include" for a subset.
@@ -154,11 +174,20 @@ apply_operations — Apply edit operations. Operation types:
   delete_test_case — Remove a test case
     { "op": "delete_test_case", "_uid": <_uid> }
 
-  add_step — Append a step to a test case
-    { "op": "add_step", "_uid": <test case _uid>, "step": { "description": "...", "expectedResult": "...", "testData": null } }
+  add_step — Add a step to a test case (appends by default, or insert at position with atIndex)
+    { "op": "add_step", "_uid": <test case _uid>, "step": { "description": "...", "expectedResult": "...", "testData": null }, "atIndex": <0-based, optional> }
 
   delete_step — Remove a step by index
     { "op": "delete_step", "_uid": <test case _uid>, "stepIndex": <0-based> }
+
+  move_step — Reorder a step within a test case
+    { "op": "move_step", "_uid": <test case _uid>, "fromIndex": <0-based>, "toIndex": <0-based> }
+
+  set_custom_field — Set a single custom field on one or more test cases (no need to include all fields)
+    { "op": "set_custom_field", "_uids": [<_uid1>, ...], "name": "Scenario", "type": "SINGLE_LINE_TEXT", "value": "..." }
+
+  move_test_case — Move a test case to a different folder
+    { "op": "move_test_case", "_uid": <_uid>, "toFolder": "<folder path>" }
 
   create_folder — Create a new subfolder
     { "op": "create_folder", "parent": "<parent folder path>", "name": "New Folder" }
@@ -180,7 +209,8 @@ Rules:
 - customFields is an array of {name, type, value}. Known types:
   Scenario: { "name": "Scenario", "type": "SINGLE_LINE_TEXT", "value": "..." }
   System: { "name": "System", "type": "SINGLE_CHOICE_SELECT_LIST", "value": "..." }
-  When updating customFields, include ALL custom fields for the test case (not just changed ones).
+  When updating customFields via update_test_case/batch_update, include ALL custom fields for the test case.
+  To update a single custom field without fetching all fields, use set_custom_field instead.
 - Step fields (description, expectedResult, testData) are string|null.
 - Use batch_update when applying the same change to multiple test cases.
 
@@ -205,16 +235,24 @@ function collectTestCases(folder: Folder, path: string, result: TcWithFolder[]) 
   }
 }
 
-function textMatchesPattern(tc: TestCase, re: RegExp): boolean {
-  if (re.test(tc.name)) return true
-  if (tc.objective && re.test(tc.objective)) return true
-  for (const step of tc.steps) {
-    if (step.description && re.test(step.description)) return true
-    if (step.expectedResult && re.test(step.expectedResult)) return true
-    if (step.testData && re.test(step.testData)) return true
+function textMatchesPattern(tc: TestCase, re: RegExp, searchIn?: Set<string>): boolean {
+  if (!searchIn || searchIn.has('name')) {
+    if (re.test(tc.name)) return true
   }
-  for (const cf of tc.customFields) {
-    if (cf.value && re.test(cf.value)) return true
+  if (!searchIn || searchIn.has('objective')) {
+    if (tc.objective && re.test(tc.objective)) return true
+  }
+  if (!searchIn || searchIn.has('steps')) {
+    for (const step of tc.steps) {
+      if (step.description && re.test(step.description)) return true
+      if (step.expectedResult && re.test(step.expectedResult)) return true
+      if (step.testData && re.test(step.testData)) return true
+    }
+  }
+  if (!searchIn || searchIn.has('customFields')) {
+    for (const cf of tc.customFields) {
+      if (cf.value && re.test(cf.value)) return true
+    }
   }
   return false
 }
@@ -223,7 +261,15 @@ function textMatchesPattern(tc: TestCase, re: RegExp): boolean {
 
 interface SearchInput {
   pattern?: string
-  fields?: { priority?: string; status?: string; folder?: string }
+  search_in?: string[]
+  fields?: {
+    priority?: string
+    status?: string
+    folder?: string
+    min_steps?: number
+    max_steps?: number
+    customField?: { name: string; value: string }
+  }
   include?: string[]
   limit?: number
 }
@@ -244,10 +290,21 @@ function executeSearch(folder: Folder, input: SearchInput): { results: Record<st
   if (input.fields?.status) {
     filtered = filtered.filter(e => e.tc.status === input.fields!.status)
   }
+  if (input.fields?.min_steps != null) {
+    filtered = filtered.filter(e => e.tc.steps.length >= input.fields!.min_steps!)
+  }
+  if (input.fields?.max_steps != null) {
+    filtered = filtered.filter(e => e.tc.steps.length <= input.fields!.max_steps!)
+  }
+  if (input.fields?.customField) {
+    const { name, value } = input.fields.customField
+    filtered = filtered.filter(e => e.tc.customFields.some(cf => cf.name === name && cf.value === value))
+  }
 
   if (input.pattern) {
     const re = new RegExp(input.pattern, 'i')
-    filtered = filtered.filter(e => textMatchesPattern(e.tc, re))
+    const searchIn = input.search_in?.length ? new Set(input.search_in) : undefined
+    filtered = filtered.filter(e => textMatchesPattern(e.tc, re, searchIn))
   }
 
   const totalMatches = filtered.length
@@ -607,10 +664,26 @@ function validateOperations(data: unknown[]): Operation[] {
       case 'add_step':
         if (typeof op._uid !== 'number') throw new Error(`operations[${i}]._uid: expected number`)
         if (!op.step || typeof op.step !== 'object') throw new Error(`operations[${i}].step: expected object`)
+        if (op.atIndex != null && typeof op.atIndex !== 'number') throw new Error(`operations[${i}].atIndex: expected number`)
         break
       case 'delete_step':
         if (typeof op._uid !== 'number') throw new Error(`operations[${i}]._uid: expected number`)
         if (typeof op.stepIndex !== 'number') throw new Error(`operations[${i}].stepIndex: expected number`)
+        break
+      case 'move_step':
+        if (typeof op._uid !== 'number') throw new Error(`operations[${i}]._uid: expected number`)
+        if (typeof op.fromIndex !== 'number') throw new Error(`operations[${i}].fromIndex: expected number`)
+        if (typeof op.toIndex !== 'number') throw new Error(`operations[${i}].toIndex: expected number`)
+        break
+      case 'set_custom_field':
+        if (!Array.isArray(op._uids)) throw new Error(`operations[${i}]._uids: expected array`)
+        if (typeof op.name !== 'string') throw new Error(`operations[${i}].name: expected string`)
+        if (typeof op.type !== 'string') throw new Error(`operations[${i}].type: expected string`)
+        if (typeof op.value !== 'string') throw new Error(`operations[${i}].value: expected string`)
+        break
+      case 'move_test_case':
+        if (typeof op._uid !== 'number') throw new Error(`operations[${i}]._uid: expected number`)
+        if (typeof op.toFolder !== 'string') throw new Error(`operations[${i}].toFolder: expected string`)
         break
       case 'create_folder':
         if (typeof op.parent !== 'string') throw new Error(`operations[${i}].parent: expected string`)
@@ -707,12 +780,31 @@ export function generateChangelog(folder: Folder, operations: Operation[]): stri
       }
       case 'add_step': {
         const tc = tcByUid.get(op._uid)
-        lines.push(`\u2022 Added step to "${tc?.name ?? `_uid ${op._uid}`}"`)
+        const pos = op.atIndex != null ? ` at position ${op.atIndex + 1}` : ''
+        lines.push(`\u2022 Added step${pos} to "${tc?.name ?? `_uid ${op._uid}`}"`)
         break
       }
       case 'delete_step': {
         const tc = tcByUid.get(op._uid)
         lines.push(`\u2022 Removed step ${op.stepIndex + 1} from "${tc?.name ?? `_uid ${op._uid}`}"`)
+        break
+      }
+      case 'move_step': {
+        const tc = tcByUid.get(op._uid)
+        lines.push(`\u2022 Moved step ${op.fromIndex + 1} \u2192 ${op.toIndex + 1} in "${tc?.name ?? `_uid ${op._uid}`}"`)
+        break
+      }
+      case 'set_custom_field': {
+        const tcs = op._uids.map(u => tcByUid.get(u)).filter((tc): tc is TestCase => !!tc)
+        const target = tcs.length <= 5
+          ? tcs.map(tc => `"${tc.name}"`).join(', ')
+          : `${tcs.length} test cases`
+        lines.push(`\u2022 Set ${op.name} \u2192 "${op.value}" on ${target}`)
+        break
+      }
+      case 'move_test_case': {
+        const tc = tcByUid.get(op._uid)
+        lines.push(`\u2022 Moved "${tc?.name ?? `_uid ${op._uid}`}" to "${op.toFolder}"`)
         break
       }
       case 'create_folder': {
@@ -862,12 +954,17 @@ export function applyOperations(folder: Folder, operations: Operation[]): void {
       case 'add_step': {
         const tc = tcByUid.get(op._uid)
         if (!tc) break
-        tc.steps.push({
+        const newStep = {
           _uid: uid(),
           description: op.step.description ?? null,
           expectedResult: op.step.expectedResult ?? null,
           testData: op.step.testData ?? null,
-        })
+        }
+        if (op.atIndex != null && op.atIndex >= 0 && op.atIndex <= tc.steps.length) {
+          tc.steps.splice(op.atIndex, 0, newStep)
+        } else {
+          tc.steps.push(newStep)
+        }
         break
       }
       case 'delete_step': {
@@ -875,6 +972,43 @@ export function applyOperations(folder: Folder, operations: Operation[]): void {
         if (tc && op.stepIndex >= 0 && op.stepIndex < tc.steps.length) {
           tc.steps.splice(op.stepIndex, 1)
         }
+        break
+      }
+      case 'move_step': {
+        const tc = tcByUid.get(op._uid)
+        if (!tc) break
+        const { fromIndex, toIndex } = op
+        if (fromIndex >= 0 && fromIndex < tc.steps.length && toIndex >= 0 && toIndex < tc.steps.length) {
+          const [step] = tc.steps.splice(fromIndex, 1)
+          tc.steps.splice(toIndex, 0, step)
+        }
+        break
+      }
+      case 'set_custom_field': {
+        for (const u of op._uids) {
+          const tc = tcByUid.get(u)
+          if (!tc) continue
+          const existing = tc.customFields.find(cf => cf.name === op.name)
+          if (existing) {
+            existing.type = op.type
+            existing.value = op.value
+          } else {
+            tc.customFields.push({ name: op.name, type: op.type, value: op.value })
+          }
+        }
+        break
+      }
+      case 'move_test_case': {
+        const tc = tcByUid.get(op._uid)
+        if (!tc) break
+        const targetFolder = folderByPath.get(op.toFolder)
+        if (!targetFolder) break
+        // Remove from current folder
+        for (const f of folderByPath.values()) {
+          const idx = f.testCases.indexOf(tc)
+          if (idx >= 0) { f.testCases.splice(idx, 1); break }
+        }
+        targetFolder.testCases.push(tc)
         break
       }
       case 'create_folder': {
