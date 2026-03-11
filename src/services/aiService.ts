@@ -466,6 +466,7 @@ export async function sendMessage(
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 16384,
+        output_config: { effort: 'medium' },
         stream: true,
         system: systemPrompt,
         tools,
