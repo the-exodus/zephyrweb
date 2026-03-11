@@ -5,14 +5,14 @@ const KNOWN_CUSTOM_FIELDS: Array<{ name: string; type: string }> = [
   { name: 'System', type: 'SINGLE_CHOICE_SELECT_LIST' },
 ]
 
-export function ensureKnownCustomFields(fields: CustomField[], defaultScenario?: string): CustomField[] {
+export function ensureKnownCustomFields(fields: CustomField[], folderName?: string): CustomField[] {
   for (const known of KNOWN_CUSTOM_FIELDS) {
     const existing = fields.find(f => f.name === known.name)
     if (!existing) {
-      const value = known.name === 'Scenario' && defaultScenario ? defaultScenario : ''
+      const value = known.name === 'Scenario' && folderName ? folderName : ''
       fields.push({ name: known.name, type: known.type, value })
-    } else if (known.name === 'Scenario' && !existing.value && defaultScenario) {
-      existing.value = defaultScenario
+    } else if (known.name === 'Scenario' && folderName) {
+      existing.value = folderName
     }
   }
   return fields

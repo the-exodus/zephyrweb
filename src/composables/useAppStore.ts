@@ -2,8 +2,8 @@ import { ref, computed, triggerRef } from 'vue'
 import type { Project, Folder, TestCase, Step } from '../types'
 import { parse, serialize, readFile, uid, ensureKnownCustomFields } from '../services/xmlService'
 import * as undo from '../services/undoManager'
-import { buildSystemPrompt, sendMessage, applyResult } from '../services/aiService'
-import type { FolderPayload } from '../services/aiService'
+import { buildSystemPrompt, sendMessage, generateChangelog, applyOperations, snapshotFolder, restoreFolder } from '../services/aiService'
+import type { Operation } from '../services/aiService'
 
 // --- State ---
 
@@ -17,12 +17,16 @@ const selectedStep = ref<Step | null>(null)
 const hasUnsavedChanges = ref(false)
 
 // AI panel state
+export type MessageSegment =
+  | { type: 'text'; content: string }
+  | { type: 'tool'; content: string }
+
 export interface AiMessage {
   role: 'user' | 'assistant'
   content: string
+  segments?: MessageSegment[]
   proposal?: {
-    summary: string
-    data: FolderPayload
+    operations: Operation[]
     status: 'pending' | 'accepted' | 'rejected'
     folder: Folder
   }
@@ -529,7 +533,7 @@ function addTestCase() {
     updatedBy: null,
     updatedOn: null,
     owner: null,
-    customFields: ensureKnownCustomFields([]),
+    customFields: ensureKnownCustomFields([], folder.name),
     issues: [],
     steps: [],
   }
@@ -609,9 +613,10 @@ function moveTestCasesToFolder(testCases: TestCase[], targetFolder: Folder) {
     }
   }
 
-  // Add to target
+  // Add to target and update Scenario to match new folder
   for (const { tc } of moves) {
     targetFolder.testCases.push(tc)
+    ensureKnownCustomFields(tc.customFields, targetFolder.name)
   }
 
   selectFolder(targetFolder)
@@ -628,6 +633,7 @@ function moveTestCasesToFolder(testCases: TestCase[], targetFolder: Folder) {
       for (const entries of bySource.values()) {
         for (const { tc, sourceFolder, oldIndex } of [...entries].reverse()) {
           sourceFolder.testCases.splice(Math.min(oldIndex, sourceFolder.testCases.length), 0, tc)
+          ensureKnownCustomFields(tc.customFields, sourceFolder.name)
         }
       }
       const firstSource = moves[0].sourceFolder
@@ -644,6 +650,7 @@ function moveTestCasesToFolder(testCases: TestCase[], targetFolder: Folder) {
       }
       for (const { tc } of moves) {
         targetFolder.testCases.push(tc)
+        ensureKnownCustomFields(tc.customFields, targetFolder.name)
       }
       selectFolder(targetFolder)
       selectedTestCases.value = new Set(moves.map(m => m.tc))
@@ -707,25 +714,49 @@ async function sendAiMessage(text: string) {
   aiMessages.value.push({ role: 'user', content: text })
   aiLoading.value = true
 
+  // Create assistant message early so streaming text appears immediately
+  aiMessages.value.push({ role: 'assistant', content: '', segments: [] })
+  const msgIndex = aiMessages.value.length - 1
+
   try {
     const systemPrompt = buildSystemPrompt(folder)
-    // Build messages for API — strip proposal metadata
-    const messages = aiMessages.value.map(m => ({ role: m.role, content: m.content }))
+    // Build messages for API — exclude the streaming placeholder
+    const messages = aiMessages.value.slice(0, -1).map(m => ({ role: m.role, content: m.content }))
 
-    const response = await sendMessage(messages, systemPrompt, apiKey.value)
+    const response = await sendMessage(messages, systemPrompt, apiKey.value, folder, {
+      onText: (delta) => {
+        const msg = aiMessages.value[msgIndex]
+        msg.content += delta
+        const segs = msg.segments!
+        const last = segs[segs.length - 1]
+        if (last?.type === 'text') {
+          last.content += delta
+        } else {
+          segs.push({ type: 'text', content: delta })
+        }
+      },
+      onToolProgress: (summary) => {
+        aiMessages.value[msgIndex].segments!.push({ type: 'tool', content: summary })
+      },
+    })
 
-    if (response.type === 'answer' || response.type === 'question') {
-      aiMessages.value.push({ role: 'assistant', content: response.text })
-    } else {
-      aiMessages.value.push({
-        role: 'assistant',
-        content: response.summary,
-        proposal: { summary: response.summary, data: response.data, status: 'pending', folder },
-      })
+    const msg = aiMessages.value[msgIndex]
+
+    if (response.type === 'result') {
+      const changelog = generateChangelog(folder, response.operations)
+      if (msg.content && !msg.content.endsWith('\n')) msg.content += '\n\n'
+      msg.content += changelog
+      msg.segments!.push({ type: 'text', content: changelog })
+      msg.proposal = { operations: response.operations, status: 'pending', folder }
     }
+    // For 'answer', text is already populated via onText streaming
+    if (!msg.content) msg.content = '(no response)'
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error'
-    aiMessages.value.push({ role: 'assistant', content: `Error: ${message}` })
+    const msg = aiMessages.value[msgIndex]
+    const errText = `Error: ${message}`
+    msg.content = msg.content ? msg.content + `\n\n${errText}` : errText
+    msg.segments!.push({ type: 'text', content: errText })
   } finally {
     aiLoading.value = false
   }
@@ -733,33 +764,17 @@ async function sendAiMessage(text: string) {
 
 function acceptProposal(msg: AiMessage) {
   if (!msg.proposal || msg.proposal.status !== 'pending') return
-  const { data, folder } = msg.proposal
+  const { operations, folder } = msg.proposal
 
-  // Snapshot for undo
-  const prevName = folder.name
-  const prevChildren = [...folder.children]
-  const prevTestCases = [...folder.testCases]
-
-  // Apply
-  const merged = applyResult(folder, data)
-  folder.name = merged.name
-  folder.children = merged.children
-  folder.testCases = merged.testCases
+  const before = snapshotFolder(folder)
+  applyOperations(folder, operations)
+  const after = snapshotFolder(folder)
 
   msg.proposal.status = 'accepted'
 
   undo.record({
-    undo: () => {
-      folder.name = prevName
-      folder.children = prevChildren
-      folder.testCases = prevTestCases
-    },
-    redo: () => {
-      const re = applyResult(folder, data)
-      folder.name = re.name
-      folder.children = re.children
-      folder.testCases = re.testCases
-    },
+    undo: () => restoreFolder(folder, before),
+    redo: () => restoreFolder(folder, after),
   })
   markChanged()
   triggerRef(project)

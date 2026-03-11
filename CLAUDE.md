@@ -73,13 +73,19 @@ Step text fields use `<br />` in XML ↔ `\n` in the UI. All text fields wrapped
 
 ### AI integration
 
-`src/services/aiService.ts` provides Claude API integration. The AI panel (`AiPanel.vue`) scopes conversations to the selected folder and its subfolders. The folder tree is serialized to JSON (stripping `_uid`, `index`, and metadata fields) and included in the system prompt, which is rebuilt on every message so Claude sees current data.
+`src/services/aiService.ts` provides Claude API integration via an agentic tool-use loop. The AI panel (`AiPanel.vue`) scopes conversations to the selected folder and its subfolders.
 
-Claude always responds with JSON in one of three formats: `{"type": "answer", "text": "..."}`, `{"type": "question", "text": "..."}`, or `{"type": "result", "summary": "...", "data": <folder tree>}`. Result responses show Apply/Reject buttons — applying replaces the folder's data via `applyResult()` which re-assigns `_uid`s and restores metadata from originals by matching on `id`. The whole apply is a single undo action.
+The system prompt includes only a lightweight folder summary (folder tree with `_uid` + `name` per test case, no full data). Claude uses tools to retrieve details on demand:
 
-API calls go directly from the browser using the `anthropic-dangerous-direct-browser-access` header (no proxy needed). The user's API key is stored in localStorage under `zephyrEdit.settings`. Model: `claude-sonnet-4-6`, no extended thinking.
+- `search_test_cases` — regex pattern match across name, objective, step text, custom field values. Supports field filters (priority, status, folder) and an `include` param to select which fields appear in results. Returns `_uid` + `name` by default. `limit` param (default 50), response includes `totalMatches`.
+- `get_test_cases` — fetch full or partial data for specific `_uid`s. `include` param selects fields (priority, status, objective, customFields, steps, id, key, folder). Default: all fields.
+- `apply_operations` — apply edit operations (same as before).
 
-**Known limitation**: The full-replacement approach means large folders (200+ test cases) can exceed output token limits. This needs a different strategy (e.g., granular edit operations) for large datasets.
+The `sendMessage` function runs an agentic loop: call the API, if `stop_reason === 'tool_use'` execute search/get tools locally against the in-memory folder, return `tool_result` messages, and loop (max 20 iterations) until Claude responds with `end_turn` or calls `apply_operations`. Intermediate tool-use/tool-result messages are ephemeral within one `sendMessage` call — cross-turn history uses plain text only. The system prompt is rebuilt each turn.
+
+Available operations: `update_test_case`, `batch_update` (same fields on multiple test cases), `update_step`, `add_test_case`, `delete_test_case`, `add_step`, `delete_step`, `create_folder`, `delete_folder`, `regex_replace` (bulk regex find/replace on a text field across multiple test cases — supports test case fields `name`/`objective` and step fields via `steps.description`/`steps.expectedResult`/`steps.testData`). Result responses generate a human-readable changelog from the operations (showing old→new values) displayed with Apply/Reject buttons. `applyOperations()` mutates the folder in place. Undo uses deep snapshots (`snapshotFolder`/`restoreFolder`) taken before and after applying.
+
+API calls go directly from the browser using the `anthropic-dangerous-direct-browser-access` header (no proxy needed). The user's API key is stored in localStorage under `zephyrEdit.settings`. Model: `claude-sonnet-4-6`, max_tokens: 16384, no extended thinking.
 
 ### Settings
 
