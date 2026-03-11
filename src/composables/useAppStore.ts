@@ -17,20 +17,23 @@ const selectedStep = ref<Step | null>(null)
 const hasUnsavedChanges = ref(false)
 
 // AI panel state
+export type MessageSegment =
+  | { type: 'text'; content: string }
+  | { type: 'tool'; content: string }
+
 export interface AiMessage {
   role: 'user' | 'assistant'
   content: string
+  segments?: MessageSegment[]
   proposal?: {
     operations: Operation[]
     status: 'pending' | 'accepted' | 'rejected'
     folder: Folder
   }
-  toolProgress?: string[]
 }
 const showAiPanel = ref(false)
 const aiMessages = ref<AiMessage[]>([])
 const aiLoading = ref(false)
-const aiToolProgress = ref<string[]>([])
 
 // Dialog state
 const dialog = ref<{
@@ -707,10 +710,9 @@ async function sendAiMessage(text: string) {
   const folder = selectedFolder.value
   aiMessages.value.push({ role: 'user', content: text })
   aiLoading.value = true
-  aiToolProgress.value = []
 
   // Create assistant message early so streaming text appears immediately
-  aiMessages.value.push({ role: 'assistant', content: '' })
+  aiMessages.value.push({ role: 'assistant', content: '', segments: [] })
   const msgIndex = aiMessages.value.length - 1
 
   try {
@@ -720,20 +722,28 @@ async function sendAiMessage(text: string) {
 
     const response = await sendMessage(messages, systemPrompt, apiKey.value, folder, {
       onText: (delta) => {
-        aiMessages.value[msgIndex].content += delta
+        const msg = aiMessages.value[msgIndex]
+        msg.content += delta
+        const segs = msg.segments!
+        const last = segs[segs.length - 1]
+        if (last?.type === 'text') {
+          last.content += delta
+        } else {
+          segs.push({ type: 'text', content: delta })
+        }
       },
       onToolProgress: (summary) => {
-        aiToolProgress.value = [...aiToolProgress.value, summary]
+        aiMessages.value[msgIndex].segments!.push({ type: 'tool', content: summary })
       },
     })
 
     const msg = aiMessages.value[msgIndex]
-    msg.toolProgress = aiToolProgress.value.length > 0 ? [...aiToolProgress.value] : undefined
 
     if (response.type === 'result') {
       const changelog = generateChangelog(folder, response.operations)
       if (msg.content && !msg.content.endsWith('\n')) msg.content += '\n\n'
       msg.content += changelog
+      msg.segments!.push({ type: 'text', content: changelog })
       msg.proposal = { operations: response.operations, status: 'pending', folder }
     }
     // For 'answer', text is already populated via onText streaming
@@ -741,12 +751,11 @@ async function sendAiMessage(text: string) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error'
     const msg = aiMessages.value[msgIndex]
-    msg.content = msg.content
-      ? msg.content + `\n\nError: ${message}`
-      : `Error: ${message}`
+    const errText = `Error: ${message}`
+    msg.content = msg.content ? msg.content + `\n\n${errText}` : errText
+    msg.segments!.push({ type: 'text', content: errText })
   } finally {
     aiLoading.value = false
-    aiToolProgress.value = []
   }
 }
 
@@ -798,7 +807,7 @@ export function useAppStore() {
     // State
     project, fileName, selectedFolder, selectedTestCase, selectedTestCases, selectedStep,
     hasUnsavedChanges, dialog, showSettings, apiKey,
-    showAiPanel, aiMessages, aiLoading, aiToolProgress,
+    showAiPanel, aiMessages, aiLoading,
     // Computed
     isFileOpen, testCases, steps, canUndo, canRedo,
     statusFilePath, statusContext, statusModified, title,

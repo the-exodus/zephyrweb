@@ -27,12 +27,12 @@ function scrollToBottom() {
   })
 }
 
-// Scroll on new messages and during streaming (content growth)
+// Scroll on new messages, streaming text, and tool segments
 watch(
   () => {
     const msgs = store.aiMessages.value
     const last = msgs[msgs.length - 1]
-    return msgs.length + (last?.content?.length ?? 0)
+    return msgs.length + (last?.content?.length ?? 0) + (last?.segments?.length ?? 0)
   },
   scrollToBottom,
 )
@@ -87,37 +87,37 @@ function onKeydown(e: KeyboardEvent) {
           class="text-sm rounded-lg px-3 py-2 whitespace-pre-wrap bg-blue-500 text-white"
         >{{ msg.content }}</div>
 
-        <!-- Assistant message with proposal -->
-        <div v-else-if="msg.proposal" class="space-y-2">
-          <div class="text-sm rounded-lg px-3 py-2 bg-gray-100 text-gray-900 whitespace-pre-wrap">{{ msg.content }}</div>
-          <div v-if="msg.toolProgress?.length" class="text-xs text-gray-400 px-1">{{ msg.toolProgress.length }} tool call(s)</div>
-          <div v-if="msg.proposal.status === 'pending'" class="flex gap-2 px-1">
-            <button
-              @click="store.acceptProposal(msg)"
-              class="px-3 py-1 text-xs text-white bg-green-600 hover:bg-green-700 rounded transition-colors"
-            >Apply</button>
-            <button
-              @click="store.rejectProposal(msg)"
-              class="px-3 py-1 text-xs text-gray-700 bg-gray-200 hover:bg-gray-300 rounded transition-colors"
-            >Reject</button>
+        <!-- Assistant message (with optional proposal) -->
+        <div v-else-if="msg.segments?.length" class="space-y-2">
+          <div class="text-sm rounded-lg px-3 py-2 bg-gray-100 text-gray-900">
+            <template v-for="(seg, j) in msg.segments" :key="j">
+              <div v-if="seg.type === 'text'" class="whitespace-pre-wrap">{{ seg.content }}</div>
+              <div v-else class="text-xs text-gray-500 my-1.5 py-1 px-2 bg-white rounded border border-gray-200">{{ seg.content }}</div>
+            </template>
           </div>
-          <div v-else-if="msg.proposal.status === 'accepted'" class="text-xs text-green-600 px-1">Applied</div>
-          <div v-else class="text-xs text-gray-400 px-1">Rejected</div>
+          <template v-if="msg.proposal">
+            <div v-if="msg.proposal.status === 'pending'" class="flex gap-2 px-1">
+              <button
+                @click="store.acceptProposal(msg)"
+                class="px-3 py-1 text-xs text-white bg-green-600 hover:bg-green-700 rounded transition-colors"
+              >Apply</button>
+              <button
+                @click="store.rejectProposal(msg)"
+                class="px-3 py-1 text-xs text-gray-700 bg-gray-200 hover:bg-gray-300 rounded transition-colors"
+              >Reject</button>
+            </div>
+            <div v-else-if="msg.proposal.status === 'accepted'" class="text-xs text-green-600 px-1">Applied</div>
+            <div v-else class="text-xs text-gray-400 px-1">Rejected</div>
+          </template>
         </div>
 
-        <!-- Plain assistant message (hidden while empty during streaming) -->
-        <div v-else-if="msg.content" class="space-y-1">
-          <div class="text-sm rounded-lg px-3 py-2 whitespace-pre-wrap bg-gray-100 text-gray-900">{{ msg.content }}</div>
-          <div v-if="msg.toolProgress?.length" class="text-xs text-gray-400 px-1">{{ msg.toolProgress.length }} tool call(s)</div>
-        </div>
+        <!-- Fallback for messages without segments (e.g. from older conversations) -->
+        <div v-else-if="msg.content"
+          class="text-sm rounded-lg px-3 py-2 whitespace-pre-wrap bg-gray-100 text-gray-900"
+        >{{ msg.content }}</div>
       </div>
-      <div v-if="store.aiLoading.value" class="mr-4">
-        <div class="text-sm text-gray-400 px-3 py-2">
-          <div v-if="store.aiToolProgress.value.length > 0" class="space-y-0.5">
-            <div v-for="(line, i) in store.aiToolProgress.value" :key="i">{{ line }}</div>
-          </div>
-          <div v-if="!store.aiMessages.value[store.aiMessages.value.length - 1]?.content">Thinking...</div>
-        </div>
+      <div v-if="store.aiLoading.value && !store.aiMessages.value[store.aiMessages.value.length - 1]?.content" class="mr-4">
+        <div class="text-sm text-gray-400 px-3 py-2">Thinking...</div>
       </div>
     </div>
 
