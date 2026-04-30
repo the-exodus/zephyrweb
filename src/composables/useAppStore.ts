@@ -15,7 +15,7 @@ const selectedTestCase = ref<TestCase | null>(null)
 const selectedTestCases = ref(new Set<TestCase>())
 const selectedStep = ref<Step | null>(null)
 const hasUnsavedChanges = ref(false)
-const clipboardTestCase = ref<TestCase | null>(null)
+const clipboardTestCases = ref<TestCase[]>([])
 
 // AI panel state
 export type MessageSegment =
@@ -52,8 +52,8 @@ const testCases = computed(() => selectedFolder.value?.testCases ?? [])
 const steps = computed(() => selectedTestCase.value?.steps ?? [])
 const canUndo = undo.canUndo
 const canRedo = undo.canRedo
-const canCopy = computed(() => selectedTestCase.value != null)
-const canPaste = computed(() => clipboardTestCase.value != null && selectedFolder.value != null)
+const canCopy = computed(() => selectedTestCases.value.size > 0)
+const canPaste = computed(() => clipboardTestCases.value.length > 0 && selectedFolder.value != null)
 
 const statusFilePath = computed(() => fileName.value ?? 'No file open')
 const statusModified = computed(() => hasUnsavedChanges.value ? 'Modified' : '')
@@ -553,28 +553,49 @@ function addTestCase() {
 }
 
 function copyTestCase() {
-  if (!selectedTestCase.value) return
-  clipboardTestCase.value = JSON.parse(JSON.stringify(selectedTestCase.value)) as TestCase
+  if (selectedTestCases.value.size === 0) return
+  const sourceFolder = findFolderContaining([...selectedTestCases.value][0])
+  const ordered = sourceFolder
+    ? sourceFolder.testCases.filter(tc => selectedTestCases.value.has(tc))
+    : [...selectedTestCases.value]
+  clipboardTestCases.value = ordered.map(tc => JSON.parse(JSON.stringify(tc)) as TestCase)
 }
 
 function pasteTestCase() {
-  if (!clipboardTestCase.value || !selectedFolder.value) return
+  if (clipboardTestCases.value.length === 0 || !selectedFolder.value) return
   const folder = selectedFolder.value
-  const tc = JSON.parse(JSON.stringify(clipboardTestCase.value)) as TestCase
-  tc._uid = uid()
-  tc.id = '0'
-  for (const s of tc.steps) s._uid = uid()
-
   const existing = new Set(folder.testCases.map(t => t.name))
-  while (existing.has(tc.name)) tc.name = tc.name + ' - Copy'
+  const pasted: TestCase[] = []
 
-  ensureKnownCustomFields(tc.customFields, folder.name)
-  folder.testCases.push(tc)
-  selectTestCase(tc)
+  for (const source of clipboardTestCases.value) {
+    const tc = JSON.parse(JSON.stringify(source)) as TestCase
+    tc._uid = uid()
+    tc.id = '0'
+    for (const s of tc.steps) s._uid = uid()
+
+    while (existing.has(tc.name)) tc.name = tc.name + ' - Copy'
+    existing.add(tc.name)
+
+    ensureKnownCustomFields(tc.customFields, folder.name)
+    folder.testCases.push(tc)
+    pasted.push(tc)
+  }
+
+  selectedTestCases.value = new Set(pasted)
+  selectedTestCase.value = pasted[pasted.length - 1]
+  selectedStep.value = null
 
   undo.record({
-    undo: () => { folder.testCases.splice(folder.testCases.indexOf(tc), 1); selectTestCase(null) },
-    redo: () => { folder.testCases.push(tc); selectTestCase(tc) },
+    undo: () => {
+      for (const tc of pasted) folder.testCases.splice(folder.testCases.indexOf(tc), 1)
+      selectTestCase(null)
+    },
+    redo: () => {
+      for (const tc of pasted) folder.testCases.push(tc)
+      selectedTestCases.value = new Set(pasted)
+      selectedTestCase.value = pasted[pasted.length - 1]
+      selectedStep.value = null
+    },
   })
   markChanged()
 }
