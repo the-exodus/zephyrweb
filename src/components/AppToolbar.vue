@@ -54,6 +54,23 @@ const store = useAppStore()
     >
       Redo
     </button>
+    <div class="w-px h-5 bg-gray-300 mx-1"></div>
+    <button
+      @click="store.copyTestCase()"
+      :disabled="!store.canCopy.value"
+      class="px-3 py-1 text-sm rounded hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+      title="Copy test case"
+    >
+      Copy
+    </button>
+    <button
+      @click="store.pasteTestCase()"
+      :disabled="!store.canPaste.value"
+      class="px-3 py-1 text-sm rounded hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+      title="Paste test case into selected folder"
+    >
+      Paste
+    </button>
     <div class="flex-1"></div>
     <button
       @click="store.showAiPanel.value = !store.showAiPanel.value"

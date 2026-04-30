@@ -15,6 +15,7 @@ const selectedTestCase = ref<TestCase | null>(null)
 const selectedTestCases = ref(new Set<TestCase>())
 const selectedStep = ref<Step | null>(null)
 const hasUnsavedChanges = ref(false)
+const clipboardTestCase = ref<TestCase | null>(null)
 
 // AI panel state
 export type MessageSegment =
@@ -51,6 +52,8 @@ const testCases = computed(() => selectedFolder.value?.testCases ?? [])
 const steps = computed(() => selectedTestCase.value?.steps ?? [])
 const canUndo = undo.canUndo
 const canRedo = undo.canRedo
+const canCopy = computed(() => selectedTestCase.value != null)
+const canPaste = computed(() => clipboardTestCase.value != null && selectedFolder.value != null)
 
 const statusFilePath = computed(() => fileName.value ?? 'No file open')
 const statusModified = computed(() => hasUnsavedChanges.value ? 'Modified' : '')
@@ -549,6 +552,33 @@ function addTestCase() {
   markChanged()
 }
 
+function copyTestCase() {
+  if (!selectedTestCase.value) return
+  clipboardTestCase.value = JSON.parse(JSON.stringify(selectedTestCase.value)) as TestCase
+}
+
+function pasteTestCase() {
+  if (!clipboardTestCase.value || !selectedFolder.value) return
+  const folder = selectedFolder.value
+  const tc = JSON.parse(JSON.stringify(clipboardTestCase.value)) as TestCase
+  tc._uid = uid()
+  tc.id = '0'
+  for (const s of tc.steps) s._uid = uid()
+
+  const existing = new Set(folder.testCases.map(t => t.name))
+  while (existing.has(tc.name)) tc.name = tc.name + ' - Copy'
+
+  ensureKnownCustomFields(tc.customFields, folder.name)
+  folder.testCases.push(tc)
+  selectTestCase(tc)
+
+  undo.record({
+    undo: () => { folder.testCases.splice(folder.testCases.indexOf(tc), 1); selectTestCase(null) },
+    redo: () => { folder.testCases.push(tc); selectTestCase(tc) },
+  })
+  markChanged()
+}
+
 function deleteTestCase() {
   if (!selectedFolder.value || selectedTestCases.value.size === 0) return
   const folder = selectedFolder.value
@@ -814,7 +844,7 @@ export function useAppStore() {
     hasUnsavedChanges, dialog, showSettings, apiKey, projectContext,
     showAiPanel, aiMessages, aiLoading,
     // Computed
-    isFileOpen, testCases, steps, canUndo, canRedo,
+    isFileOpen, testCases, steps, canUndo, canRedo, canCopy, canPaste,
     statusFilePath, statusContext, statusModified, title,
     // File ops
     openFile, save, saveAs, closeFile,
@@ -826,7 +856,7 @@ export function useAppStore() {
     // Test cases
     selectTestCase, toggleTestCaseSelection, selectTestCaseRange,
     addTestCase, deleteTestCase, onTestCaseDragEnd,
-    moveTestCasesToFolder,
+    moveTestCasesToFolder, copyTestCase, pasteTestCase,
     // Steps
     selectStep, addStep, deleteStep, onStepDragEnd,
     // Edits
